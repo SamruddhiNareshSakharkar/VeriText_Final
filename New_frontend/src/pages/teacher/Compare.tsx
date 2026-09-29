@@ -559,6 +559,24 @@ export default function Compare() {
         </div>
       )}
 
+      {compareResult && (!compareResult.matching_segments || compareResult.matching_segments.length === 0) && (
+        <div
+          className="mb-3 px-4 py-2.5 rounded-xl text-xs flex items-center justify-between"
+          style={{
+            background: "rgba(59, 130, 246, 0.08)",
+            border: "1px solid rgba(59, 130, 246, 0.25)",
+            color: "var(--color-text-2)",
+          }}
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-base">ℹ️</span>
+            <span>
+              <strong>Low text similarity ({Number(compareResult.similarity_score || 0).toFixed(1)}%):</strong> No duplicate text passages found between these two documents. (To inspect plagiarism, choose two submissions for the same assignment in the dropdowns above).
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Filter & Legend Strip */}
       <div className="flex items-center justify-between gap-4 mb-3">
         <div className="flex items-center gap-3">

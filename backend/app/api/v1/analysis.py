@@ -213,6 +213,16 @@ def compare_two_submissions(
     ai_a = db.query(AIAnalysis).filter(AIAnalysis.submission_id == sub_a.id).first()
     ai_b = db.query(AIAnalysis).filter(AIAnalysis.submission_id == sub_b.id).first()
 
+    spans_a = ai_a.detected_spans_json if (ai_a and ai_a.detected_spans_json) else []
+    if not spans_a and text_a and len(text_a.strip()) > 30:
+        live_ai_a = ai_detector.analyze_text(text_a)
+        spans_a = live_ai_a.get("detected_spans", [])
+
+    spans_b = ai_b.detected_spans_json if (ai_b and ai_b.detected_spans_json) else []
+    if not spans_b and text_b and len(text_b.strip()) > 30:
+        live_ai_b = ai_detector.analyze_text(text_b)
+        spans_b = live_ai_b.get("detected_spans", [])
+
     hw_a = db.query(HandwritingAnalysis).filter(HandwritingAnalysis.submission_id == sub_a.id).first()
     hw_b = db.query(HandwritingAnalysis).filter(HandwritingAnalysis.submission_id == sub_b.id).first()
 
@@ -229,29 +239,29 @@ def compare_two_submissions(
         algorithm=sim_result["algorithm"],
         matching_segments=[MatchingSegment(**m) for m in sim_result["matching_segments"]],
         ai_analysis_a=AIAnalysisOut(
-            id=ai_a.id,
-            submission_id=ai_a.submission_id,
-            score=ai_a.score,
-            confidence=ai_a.confidence,
-            perplexity=ai_a.perplexity,
-            burstiness=ai_a.burstiness,
-            entropy=ai_a.entropy,
-            detected_spans=ai_a.detected_spans_json or [],
-            analysis_metadata=ai_a.analysis_metadata_json or {},
-            created_at=ai_a.created_at
-        ) if ai_a else None,
+            id=ai_a.id if ai_a else str(uuid.uuid4()),
+            submission_id=sub_a.id,
+            score=ai_a.score if ai_a else 0.0,
+            confidence=ai_a.confidence if ai_a else 0.0,
+            perplexity=ai_a.perplexity if ai_a else None,
+            burstiness=ai_a.burstiness if ai_a else None,
+            entropy=ai_a.entropy if ai_a else None,
+            detected_spans=spans_a,
+            analysis_metadata=ai_a.analysis_metadata_json if ai_a else {},
+            created_at=ai_a.created_at if ai_a else datetime.now(timezone.utc)
+        ),
         ai_analysis_b=AIAnalysisOut(
-            id=ai_b.id,
-            submission_id=ai_b.submission_id,
-            score=ai_b.score,
-            confidence=ai_b.confidence,
-            perplexity=ai_b.perplexity,
-            burstiness=ai_b.burstiness,
-            entropy=ai_b.entropy,
-            detected_spans=ai_b.detected_spans_json or [],
-            analysis_metadata=ai_b.analysis_metadata_json or {},
-            created_at=ai_b.created_at
-        ) if ai_b else None,
+            id=ai_b.id if ai_b else str(uuid.uuid4()),
+            submission_id=sub_b.id,
+            score=ai_b.score if ai_b else 0.0,
+            confidence=ai_b.confidence if ai_b else 0.0,
+            perplexity=ai_b.perplexity if ai_b else None,
+            burstiness=ai_b.burstiness if ai_b else None,
+            entropy=ai_b.entropy if ai_b else None,
+            detected_spans=spans_b,
+            analysis_metadata=ai_b.analysis_metadata_json if ai_b else {},
+            created_at=ai_b.created_at if ai_b else datetime.now(timezone.utc)
+        ),
         handwriting_a=HandwritingAnalysisOut(
             id=hw_a.id,
             submission_id=hw_a.submission_id,

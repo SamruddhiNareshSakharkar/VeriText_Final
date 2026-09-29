@@ -12,7 +12,7 @@ class SimilarityEngine:
     Runs in linear O(N + M) time with precise start and end character offsets.
     """
 
-    def __init__(self, n_gram_size: int = 4):
+    def __init__(self, n_gram_size: int = 3):
         self.n_gram_size = n_gram_size
         self._token_re = re.compile(r"\b\w+\b")
 
