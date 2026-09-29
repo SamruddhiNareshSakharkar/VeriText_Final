@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import PageHeader from "../../components/PageHeader";
 import StatusBadge from "../../components/StatusBadge";
@@ -221,42 +221,39 @@ export default function SubmissionDetail() {
   const topMatchedStudentName: string = analysisData.top_matched_student_name || "Peer Student";
   const topMatchedSubmissionId: string | null = analysisData.top_matched_submission_id || null;
 
-  // Build unified list of highlights
-  const unifiedHighlights = useMemo(() => {
-    const list: any[] = [];
-    detectedSpans.forEach((s, idx) => {
-      list.push({
-        id: `ai-${idx}`,
-        type: "ai" as const,
-        start: s.start ?? 0,
-        end: s.end ?? ((s.start ?? 0) + (s.text?.length || 0)),
-        text: s.text,
-        confidence: s.confidence ?? 0.85,
-        reason: s.reason || "Artificial stylometric characteristics",
-      });
+  // Build unified list of highlights (computed directly without hooks to avoid early-return hook rules violations)
+  const unifiedHighlights: any[] = [];
+  detectedSpans.forEach((s, idx) => {
+    unifiedHighlights.push({
+      id: `ai-${idx}`,
+      type: "ai" as const,
+      start: s.start ?? 0,
+      end: s.end ?? ((s.start ?? 0) + (s.text?.length || 0)),
+      text: s.text,
+      confidence: s.confidence ?? 0.85,
+      reason: s.reason || "Artificial stylometric characteristics",
     });
+  });
 
-    similarityMatches.forEach((s, idx) => {
-      list.push({
-        id: `sim-${idx}`,
-        type: "similarity" as const,
-        start: s.start_a ?? 0,
-        end: s.end_a ?? ((s.start_a ?? 0) + (s.text?.length || 0)),
-        text: s.text,
-        confidence: 0.95,
-        reason: `Passage matches peer submission (${s.length} chars)`,
-        peerName: topMatchedStudentName,
-      });
+  similarityMatches.forEach((s, idx) => {
+    unifiedHighlights.push({
+      id: `sim-${idx}`,
+      type: "similarity" as const,
+      start: s.start_a ?? 0,
+      end: s.end_a ?? ((s.start_a ?? 0) + (s.text?.length || 0)),
+      text: s.text,
+      confidence: 0.95,
+      reason: `Passage matches peer submission (${s.length} chars)`,
+      peerName: topMatchedStudentName,
     });
+  });
 
-    return list;
-  }, [detectedSpans, similarityMatches, topMatchedStudentName]);
-
-  const activeHighlights = useMemo(() => {
-    if (highlightLayer === "ai") return unifiedHighlights.filter((h) => h.type === "ai");
-    if (highlightLayer === "similarity") return unifiedHighlights.filter((h) => h.type === "similarity");
-    return unifiedHighlights;
-  }, [unifiedHighlights, highlightLayer]);
+  const activeHighlights =
+    highlightLayer === "ai"
+      ? unifiedHighlights.filter((h) => h.type === "ai")
+      : highlightLayer === "similarity"
+      ? unifiedHighlights.filter((h) => h.type === "similarity")
+      : unifiedHighlights;
 
   function scrollToHighlight(hlId: string) {
     setActiveHLId(hlId);
