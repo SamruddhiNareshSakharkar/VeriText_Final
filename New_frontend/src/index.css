@@ -214,6 +214,15 @@ h1, h2, h3, h4, h5, h6 {
 }
 .hl-match:hover, .hl-match.active { background: rgba(96, 37, 160, 0.22); }
 
+.hl-dual {
+  background: rgba(147, 51, 234, 0.16);
+  border-bottom: 2px solid rgba(147, 51, 234, 0.7);
+  cursor: pointer;
+  border-radius: 1px;
+  transition: background 0.15s;
+}
+.hl-dual:hover, .hl-dual.active { background: rgba(147, 51, 234, 0.28); }
+
 .hl-ring {
   outline: 2px solid #2255D3;
   outline-offset: 2px;

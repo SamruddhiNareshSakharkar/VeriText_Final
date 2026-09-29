@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import PageHeader from "../../components/PageHeader";
 import StatusBadge from "../../components/StatusBadge";
@@ -9,6 +9,7 @@ import Spinner from "../../components/Spinner";
 import { api, apiRequest } from "../../lib/api";
 
 type Tab = "overview" | "document" | "ocr" | "ai" | "similarity" | "handwriting" | "grading";
+type HighlightLayer = "all" | "ai" | "similarity";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -47,6 +48,9 @@ export default function SubmissionDetail() {
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("overview");
   const [activeHL, setActiveHL] = useState<number | null>(null);
+  const [activeHLId, setActiveHLId] = useState<string | null>(null);
+  const [highlightLayer, setHighlightLayer] = useState<HighlightLayer>("all");
+  const markRefs = useRef<Record<string, HTMLElement | null>>({});
   const [loading, setLoading] = useState(true);
   const [reanalyzing, setReanalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -213,50 +217,120 @@ export default function SubmissionDetail() {
     },
   ];
 
-  // Render text with highlight marks
-  function renderHighlightedText(fullText: string, spans: any[]) {
-    if (!spans || spans.length === 0) return fullText;
+  const similarityMatches: any[] = Array.isArray(analysisData.similarity_matches) ? analysisData.similarity_matches : [];
+  const topMatchedStudentName: string = analysisData.top_matched_student_name || "Peer Student";
+  const topMatchedSubmissionId: string | null = analysisData.top_matched_submission_id || null;
 
-    const sortedSpans = [...spans]
-      .filter((s) => s && (s.start !== undefined || s.text))
-      .sort((a, b) => (a.start || 0) - (b.start || 0));
-    const elements = [];
-    let lastIndex = 0;
-
-    sortedSpans.forEach((span, i) => {
-      const rawStart = span.start ?? 0;
-      const rawEnd = span.end ?? (rawStart + (span.text?.length || 0));
-      if (rawEnd <= lastIndex) return;
-
-      const start = Math.max(rawStart, lastIndex);
-      const end = Math.min(rawEnd, fullText.length);
-
-      if (start > lastIndex) {
-        elements.push(fullText.substring(lastIndex, start));
-      }
-      const isSelected = activeHL === i;
-      const confVal = Math.round((span.confidence ?? 0.85) * (span.confidence <= 1 ? 100 : 1));
-      elements.push(
-        <mark
-          key={i}
-          onClick={() => setActiveHL(isSelected ? null : i)}
-          className={`cursor-pointer transition-all ${isSelected ? "ring-2 ring-rose-500 font-semibold" : ""}`}
-          style={{
-            background: "rgba(239, 68, 68, 0.25)",
-            color: "#fca5a5",
-            padding: "2px 4px",
-            borderRadius: "3px",
-          }}
-          title={`AI Passage: ${confVal}% confidence`}
-        >
-          {fullText.substring(start, end) || span.text}
-        </mark>
-      );
-      lastIndex = Math.max(lastIndex, end);
+  // Build unified list of highlights
+  const unifiedHighlights = useMemo(() => {
+    const list: any[] = [];
+    detectedSpans.forEach((s, idx) => {
+      list.push({
+        id: `ai-${idx}`,
+        type: "ai" as const,
+        start: s.start ?? 0,
+        end: s.end ?? ((s.start ?? 0) + (s.text?.length || 0)),
+        text: s.text,
+        confidence: s.confidence ?? 0.85,
+        reason: s.reason || "Artificial stylometric characteristics",
+      });
     });
 
-    if (lastIndex < fullText.length) {
-      elements.push(fullText.substring(lastIndex));
+    similarityMatches.forEach((s, idx) => {
+      list.push({
+        id: `sim-${idx}`,
+        type: "similarity" as const,
+        start: s.start_a ?? 0,
+        end: s.end_a ?? ((s.start_a ?? 0) + (s.text?.length || 0)),
+        text: s.text,
+        confidence: 0.95,
+        reason: `Passage matches peer submission (${s.length} chars)`,
+        peerName: topMatchedStudentName,
+      });
+    });
+
+    return list;
+  }, [detectedSpans, similarityMatches, topMatchedStudentName]);
+
+  const activeHighlights = useMemo(() => {
+    if (highlightLayer === "ai") return unifiedHighlights.filter((h) => h.type === "ai");
+    if (highlightLayer === "similarity") return unifiedHighlights.filter((h) => h.type === "similarity");
+    return unifiedHighlights;
+  }, [unifiedHighlights, highlightLayer]);
+
+  function scrollToHighlight(hlId: string) {
+    setActiveHLId(hlId);
+    const el = markRefs.current[hlId];
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  // High-efficiency non-overlapping interval partition rendering (O(N log N))
+  function renderHighlightedDocument(fullText: string, activeList: any[]) {
+    if (!fullText) return null;
+    if (!activeList || activeList.length === 0) {
+      return <span>{fullText}</span>;
+    }
+
+    const pointsSet = new Set<number>([0, fullText.length]);
+    activeList.forEach((h) => {
+      const s = Math.max(0, Math.min(fullText.length, h.start));
+      const e = Math.max(0, Math.min(fullText.length, h.end));
+      if (s < e) {
+        pointsSet.add(s);
+        pointsSet.add(e);
+      }
+    });
+
+    const sortedPoints = Array.from(pointsSet).sort((a, b) => a - b);
+    const elements: React.ReactNode[] = [];
+
+    for (let k = 0; k < sortedPoints.length - 1; k++) {
+      const pStart = sortedPoints[k];
+      const pEnd = sortedPoints[k + 1];
+      if (pStart >= pEnd) continue;
+
+      const subText = fullText.substring(pStart, pEnd);
+      const matchingHls = activeList.filter((h) => h.start <= pStart && h.end >= pEnd);
+
+      if (matchingHls.length === 0) {
+        elements.push(<span key={`txt-${pStart}-${pEnd}`}>{subText}</span>);
+      } else {
+        const hasAi = matchingHls.some((h) => h.type === "ai");
+        const hasSim = matchingHls.some((h) => h.type === "similarity");
+
+        let cls = "hl-ai";
+        let badgeText = "AI Content";
+        if (hasAi && hasSim) {
+          cls = "hl-dual";
+          badgeText = "AI + Peer Match";
+        } else if (hasSim) {
+          cls = "hl-sim";
+          badgeText = "Peer Match";
+        }
+
+        const primaryHl = matchingHls[0];
+        const isSelected = activeHLId === primaryHl.id;
+
+        elements.push(
+          <mark
+            key={`mark-${pStart}-${pEnd}`}
+            ref={(el) => {
+              markRefs.current[primaryHl.id] = el;
+            }}
+            onClick={() => setActiveHLId(isSelected ? null : primaryHl.id)}
+            className={`${cls}${isSelected ? " hl-ring ring-2 ring-indigo-500 font-semibold" : ""} cursor-pointer transition-all inline`}
+            title={`${badgeText}: ${primaryHl.reason}`}
+            style={{
+              padding: "2px 4px",
+              borderRadius: "2px",
+            }}
+          >
+            {subText}
+          </mark>
+        );
+      }
     }
 
     return elements;
@@ -447,79 +521,139 @@ export default function SubmissionDetail() {
 
         {tab === "document" && (
           <div>
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                  <span className="w-2 h-2 rounded-full bg-rose-500"></span>
-                  Highlighted passages indicate AI-generated content
-                </span>
-              </div>
-              {activeHL != null && (
+            {/* Highlight controls toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4 p-3 rounded-xl" style={{ background: "var(--color-surface-2)", border: "1px solid var(--color-border)" }}>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 mr-1">Layer:</span>
                 <button
-                  onClick={() => setActiveHL(null)}
-                  className="text-xs text-indigo-400 hover:underline cursor-pointer"
+                  type="button"
+                  onClick={() => setHighlightLayer("all")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    highlightLayer === "all"
+                      ? "bg-indigo-600 text-white shadow-sm"
+                      : "bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
+                  }`}
                 >
-                  Clear highlighted selection
+                  All Anomalies ({unifiedHighlights.length})
                 </button>
-              )}
+                <button
+                  type="button"
+                  onClick={() => setHighlightLayer("ai")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    highlightLayer === "ai"
+                      ? "bg-rose-600 text-white shadow-sm"
+                      : "bg-rose-50 text-rose-700 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300"
+                  }`}
+                >
+                  AI Content ({detectedSpans.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setHighlightLayer("similarity")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    highlightLayer === "similarity"
+                      ? "bg-amber-600 text-white shadow-sm"
+                      : "bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300"
+                  }`}
+                >
+                  Peer Matches ({similarityMatches.length})
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3">
+                {activeHLId && (
+                  <button
+                    onClick={() => setActiveHLId(null)}
+                    className="text-xs text-indigo-500 hover:underline cursor-pointer"
+                  >
+                    Clear selection
+                  </button>
+                )}
+                {topMatchedSubmissionId && (
+                  <Btn
+                    variant="outline"
+                    size="xs"
+                    onClick={() => navigate(`/teacher/compare?subA=${id}&subB=${topMatchedSubmissionId}`)}
+                  >
+                    Compare with {topMatchedStudentName} →
+                  </Btn>
+                )}
+              </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* Document Text Area */}
               <div
                 className="lg:col-span-2 rounded-xl p-5 overflow-y-auto whitespace-pre-wrap font-serif"
                 style={{
                   border: "1px solid var(--color-border)",
                   background: "var(--color-surface-2)",
-                  minHeight: 360,
-                  maxHeight: 520,
+                  minHeight: 380,
+                  maxHeight: 560,
                   fontSize: 14.5,
                   lineHeight: 1.9,
                   color: "var(--color-text-1)",
                 }}
               >
-                {renderHighlightedText(docText, detectedSpans)}
+                {renderHighlightedDocument(docText, activeHighlights)}
               </div>
 
-              <div className="space-y-2.5">
-                <p className="font-semibold uppercase tracking-wider text-xs" style={{ color: "var(--color-text-3)" }}>
-                  Detected Regions ({detectedSpans.length})
-                </p>
-                {detectedSpans.length === 0 ? (
+              {/* Sidebar with Flagged Passages */}
+              <div className="space-y-2.5 max-h-[560px] overflow-y-auto pr-1">
+                <div className="flex items-center justify-between">
+                  <p className="font-semibold uppercase tracking-wider text-xs" style={{ color: "var(--color-text-3)" }}>
+                    Flagged Passages ({activeHighlights.length})
+                  </p>
+                  <span className="text-[11px] text-slate-400">Click to focus</span>
+                </div>
+
+                {activeHighlights.length === 0 ? (
                   <div className="p-4 rounded-xl text-center text-xs text-slate-400" style={{ background: "var(--color-canvas)" }}>
-                    No AI or integrity anomalies detected.
+                    No integrity anomalies flagged in this layer.
                   </div>
                 ) : (
-                  detectedSpans.map((h, i) => (
-                    <div
-                      key={i}
-                      onClick={() => setActiveHL(activeHL === i ? null : i)}
-                      className="rounded-lg p-3 cursor-pointer transition-all"
-                      style={{
-                        border: `1px solid ${activeHL === i ? "var(--color-accent)" : "var(--color-border)"}`,
-                        background: activeHL === i ? "var(--color-accent-bg)" : "var(--color-surface)",
-                      }}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span
-                          className="inline-block rounded-full px-2 py-0.5 font-mono font-medium text-[10px]"
-                          style={{
-                            background: "var(--color-red-bg)",
-                            color: "var(--color-red)",
-                            border: "1px solid var(--color-red-border)",
-                          }}
+                  activeHighlights.map((h, i) => {
+                    const isSelected = activeHLId === h.id;
+                    const isAi = h.type === "ai";
+                    return (
+                      <div
+                        key={h.id || i}
+                        onClick={() => scrollToHighlight(h.id)}
+                        className="rounded-lg p-3 cursor-pointer transition-all"
+                        style={{
+                          border: `1px solid ${isSelected ? "var(--color-accent)" : "var(--color-border)"}`,
+                          background: isSelected ? "var(--color-accent-bg)" : "var(--color-surface)",
+                        }}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <span
+                            className="inline-block rounded-full px-2 py-0.5 font-mono font-medium text-[10px]"
+                            style={{
+                              background: isAi ? "var(--color-red-bg)" : "var(--color-amber-bg)",
+                              color: isAi ? "var(--color-red)" : "var(--color-amber)",
+                              border: `1px solid ${isAi ? "var(--color-red-border)" : "var(--color-amber-border)"}`,
+                            }}
+                          >
+                            {isAi
+                              ? `AI (${Math.round((h.confidence ?? 0.85) * 100)}%)`
+                              : `Peer Match (${h.peerName || "Alex"})`}
+                          </span>
+                          <span style={{ fontSize: 11, color: "var(--color-text-3)" }}>
+                            Passage #{i + 1}
+                          </span>
+                        </div>
+                        <p style={{ fontSize: 12, color: "var(--color-text-2)", lineHeight: 1.5 }}>
+                          "{h.text?.slice(0, 95)}..."
+                        </p>
+                        <p
+                          className="text-[11px] mt-1 italic"
+                          style={{ color: isAi ? "#f43f5e" : "#d97706" }}
                         >
-                          AI ({Math.round((h.confidence ?? 0.85) * (h.confidence <= 1 ? 100 : 1))}%)
-                        </span>
-                        <span style={{ fontSize: 11, color: "var(--color-text-3)" }}>Passage #{i + 1}</span>
+                          {h.reason}
+                        </p>
                       </div>
-                      <p style={{ fontSize: 12, color: "var(--color-text-2)", lineHeight: 1.5 }}>
-                        "{h.text?.slice(0, 100)}..."
-                      </p>
-                      <p className="text-[11px] text-rose-400 mt-1 italic">
-                        {h.reason || "High artificial stylometric predictability"}
-                      </p>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             </div>
@@ -617,12 +751,12 @@ export default function SubmissionDetail() {
         )}
 
         {tab === "similarity" && (
-          <div className="space-y-5">
-            <div className="grid grid-cols-3 gap-4">
+          <div className="space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {[
-                { label: "Similarity Score", value: simScore != null ? `${simScoreVal.toFixed(1)}%` : "0%" },
-                { label: "Matched Submissions", value: analysisData.similar_submissions_count ?? 0 },
-                { label: "Algorithm", value: "MinHash / TF-IDF Shingling" },
+                { label: "Peak Peer Similarity", value: simScore != null ? `${simScoreVal.toFixed(1)}%` : "0%" },
+                { label: "Cohort Submissions Scanned", value: analysisData.similar_submissions_count ?? 0 },
+                { label: "Matching Passages Found", value: similarityMatches.length },
               ].map(({ label, value }) => (
                 <div
                   key={label}
@@ -636,10 +770,85 @@ export default function SubmissionDetail() {
                 </div>
               ))}
             </div>
-            <div className="flex justify-center pt-2">
-              <Btn variant="outline" size="sm" onClick={() => navigate("/teacher/compare")}>
-                Open Side-by-Side Document Comparison
-              </Btn>
+
+            {/* Peer match spotlight */}
+            {topMatchedSubmissionId && (
+              <div
+                className="p-5 rounded-xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-4"
+                style={{
+                  background: "rgba(245, 158, 11, 0.08)",
+                  borderColor: "rgba(245, 158, 11, 0.3)",
+                }}
+              >
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500 animate-pulse"></span>
+                    <span className="text-xs font-semibold uppercase tracking-wider text-amber-500">
+                      Primary Peer Match Detected
+                    </span>
+                  </div>
+                  <h4 className="font-semibold text-base" style={{ color: "var(--color-text-1)" }}>
+                    {topMatchedStudentName}
+                  </h4>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Highest cross-submission alignment with {fmt(simScoreVal)}% overlapping stylometric and n-gram shingle content across {similarityMatches.length} passages.
+                  </p>
+                </div>
+
+                <Btn
+                  variant="primary"
+                  size="sm"
+                  onClick={() => navigate(`/teacher/compare?subA=${id}&subB=${topMatchedSubmissionId}`)}
+                >
+                  Open Side-by-Side Dual Viewer →
+                </Btn>
+              </div>
+            )}
+
+            {/* Matching Segments Detail */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="font-semibold uppercase tracking-wider text-xs" style={{ color: "var(--color-text-3)" }}>
+                  Identified Matching Excerpts ({similarityMatches.length})
+                </p>
+                <span className="text-xs font-mono text-slate-400">
+                  Algorithm: Inverted Shingle Index + Greedy Extension
+                </span>
+              </div>
+
+              {similarityMatches.length === 0 ? (
+                <Placeholder text="No duplicate or heavily paraphrased excerpts found against any student submissions in this assignment cohort." />
+              ) : (
+                <div className="grid grid-cols-1 gap-3">
+                  {similarityMatches.map((seg, idx) => (
+                    <div
+                      key={idx}
+                      className="p-4 rounded-xl border transition-all"
+                      style={{
+                        background: "var(--color-surface)",
+                        borderColor: "rgba(245, 158, 11, 0.25)",
+                      }}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-500/15 text-amber-500 border border-amber-500/25">
+                          <span>Match #{idx + 1}</span>
+                          <span>•</span>
+                          <span className="font-mono">{seg.length} characters</span>
+                        </span>
+                        <span className="text-xs font-mono text-slate-400">
+                          Offsets: [{seg.start_a} – {seg.end_a}]
+                        </span>
+                      </div>
+                      <p className="text-sm font-serif italic text-slate-200 mt-2 bg-slate-900/40 p-3 rounded-lg border border-slate-800">
+                        "{seg.text}"
+                      </p>
+                      <p className="text-xs text-amber-500/90 mt-2">
+                        Matches corresponding passage in {topMatchedStudentName}'s submission (chars {seg.start_b} – {seg.end_b})
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

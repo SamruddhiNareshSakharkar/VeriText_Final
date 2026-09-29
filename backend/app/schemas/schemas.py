@@ -219,6 +219,9 @@ class FullAnalysisOut(BaseModel):
     handwriting_analysis: Optional[HandwritingAnalysisOut] = None
     max_similarity_score: Optional[float] = None
     similar_submissions_count: int = 0
+    similarity_matches: List[MatchingSegment] = []
+    top_matched_submission_id: Optional[str] = None
+    top_matched_student_name: Optional[str] = None
 
 
 # --- TWO-SUBMISSION COMPARISON SCHEMAS ---

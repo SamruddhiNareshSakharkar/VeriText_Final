@@ -141,3 +141,30 @@ def test_ml_handwriting_engine():
     sim_diff = handwriting_engine.compare_handwriting(features_a, features_c)
     assert sim_close > 90.0
     assert sim_close > sim_diff
+
+def test_enhanced_highlighting_and_similarity():
+    # Test AI highlighting with sentence-level offsets
+    ai_text = (
+        "Furthermore, by delving into the algorithmic intricacies of cryptographic keys, "
+        "researchers can effectively mitigate systemic vulnerabilities. Moreover, this technological milestone "
+        "stands as a testament to human ingenuity across a rapidly evolving landscape."
+    )
+    ai_out = ai_detector.analyze_text(ai_text)
+    spans = ai_out["detected_spans"]
+    assert len(spans) > 0
+    for span in spans:
+        assert "start" in span and "end" in span and "confidence" in span
+        assert span["start"] >= 0 and span["end"] <= len(ai_text)
+        # Ensure slice matches
+        assert ai_text[span["start"]:span["end"]] == span["text"]
+
+    # Test similarity engine longest common extension
+    p1 = "The distributed consensus algorithm ensures all network nodes agree on a single source of truth without central authority."
+    p2 = "In decentralized systems, the distributed consensus algorithm ensures all network nodes agree on a single source of truth without central authority and handles fault tolerance."
+    res = similarity_engine.compare_documents(p1, p2)
+    assert res["score"] > 60.0
+    assert len(res["matching_segments"]) >= 1
+    top_seg = res["matching_segments"][0]
+    assert p1[top_seg["start_a"]:top_seg["end_a"]] == top_seg["text"]
+    assert p2[top_seg["start_b"]:top_seg["end_b"]].lower() == top_seg["text"].lower()
+

@@ -54,7 +54,43 @@ def get_submission_analysis(
         (SimilarityResult.submission_b_id == submission_id)
     ).all()
 
-    max_sim = max([s.score for s in sim_query], default=0.0)
+    top_sim = max(sim_query, key=lambda s: s.score, default=None)
+    max_sim = top_sim.score if top_sim else 0.0
+
+    similarity_matches = []
+    top_matched_sub_id = None
+    top_matched_name = None
+
+    if top_sim and top_sim.matching_segments_json:
+        is_a = (top_sim.submission_a_id == submission_id)
+        peer_sub_id = top_sim.submission_b_id if is_a else top_sim.submission_a_id
+        top_matched_sub_id = peer_sub_id
+        peer_sub = db.query(Submission).filter(Submission.id == peer_sub_id).first()
+        if peer_sub and peer_sub.student:
+            top_matched_name = peer_sub.student.full_name or peer_sub.student.name or peer_sub.file_name
+        elif peer_sub:
+            top_matched_name = peer_sub.file_name
+
+        raw_segs = top_sim.matching_segments_json or []
+        for seg in raw_segs:
+            if is_a:
+                similarity_matches.append(MatchingSegment(
+                    start_a=seg.get("start_a", 0),
+                    end_a=seg.get("end_a", 0),
+                    start_b=seg.get("start_b", 0),
+                    end_b=seg.get("end_b", 0),
+                    text=seg.get("text", ""),
+                    length=seg.get("length", 0)
+                ))
+            else:
+                similarity_matches.append(MatchingSegment(
+                    start_a=seg.get("start_b", 0),
+                    end_a=seg.get("end_b", 0),
+                    start_b=seg.get("start_a", 0),
+                    end_b=seg.get("end_a", 0),
+                    text=seg.get("text", ""),
+                    length=seg.get("length", 0)
+                ))
 
     ai_out = None
     if ai:
@@ -119,7 +155,10 @@ def get_submission_analysis(
         ocr_result=ocr_out,
         handwriting_analysis=hw_out,
         max_similarity_score=round(max_sim, 1),
-        similar_submissions_count=len(sim_query)
+        similar_submissions_count=len(sim_query),
+        similarity_matches=similarity_matches,
+        top_matched_submission_id=top_matched_sub_id,
+        top_matched_student_name=top_matched_name
     )
 
 @router.post("/submissions/{submission_id}/reanalyze")
