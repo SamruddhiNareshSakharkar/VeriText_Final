@@ -43,20 +43,73 @@ function RenderedDocument({ doc, active, onActivate, filter, scrollRef }: Render
 
   const visHL = doc.highlights.filter((h) => filter === "all" || h.type === filter);
 
-  type Span = { text: string; hl?: Highlight; hlIdx?: number };
-  const spans: Span[] = [];
-  const sorted = [...doc.highlights]
-    .map((h, i) => ({ h, i }))
-    .filter(({ h }) => filter === "all" || h.type === filter)
-    .sort((a, b) => a.h.start - b.h.start);
+  // Interval Partitioning: O(N log N) strictly monotonic text segmentation without duplicates or cursor scrambles
+  const renderDocumentContent = () => {
+    if (!doc.text) {
+      return <p className="text-slate-500 italic">No text content available.</p>;
+    }
 
-  let cursor = 0;
-  sorted.forEach(({ h, i }) => {
-    if (h.start > cursor) spans.push({ text: doc.text.slice(cursor, h.start) });
-    spans.push({ text: doc.text.slice(h.start, h.end), hl: h, hlIdx: i });
-    cursor = Math.max(cursor, h.end);
-  });
-  if (cursor < doc.text.length) spans.push({ text: doc.text.slice(cursor) });
+    if (visHL.length === 0) {
+      return <span>{doc.text}</span>;
+    }
+
+    // Collect all unique boundary points
+    const pointsSet = new Set<number>([0, doc.text.length]);
+    visHL.forEach((h) => {
+      const s = Math.max(0, Math.min(doc.text.length, h.start));
+      const e = Math.max(0, Math.min(doc.text.length, h.end));
+      if (s < e) {
+        pointsSet.add(s);
+        pointsSet.add(e);
+      }
+    });
+
+    const sortedPoints = Array.from(pointsSet).sort((a, b) => a - b);
+    const elements: React.ReactNode[] = [];
+
+    for (let k = 0; k < sortedPoints.length - 1; k++) {
+      const pStart = sortedPoints[k];
+      const pEnd = sortedPoints[k + 1];
+      if (pStart >= pEnd) continue;
+
+      const subText = doc.text.substring(pStart, pEnd);
+      // Find all highlights in doc.highlights that cover this interval
+      const matchingHls = doc.highlights
+        .map((h, originalIdx) => ({ h, originalIdx }))
+        .filter(({ h }) => (filter === "all" || h.type === filter) && h.start <= pStart && h.end >= pEnd);
+
+      if (matchingHls.length === 0) {
+        elements.push(<span key={`txt-${pStart}-${pEnd}`}>{subText}</span>);
+      } else {
+        const primary = matchingHls[0];
+        const origIdx = primary.originalIdx;
+        const isActive = active === origIdx;
+
+        let cls = primary.h.type === "ai" ? "hl-ai" : primary.h.type === "sim" ? "hl-sim" : "hl-match";
+        const hasAi = matchingHls.some((m) => m.h.type === "ai");
+        const hasMatch = matchingHls.some((m) => m.h.type === "match" || m.h.type === "sim");
+        if (hasAi && hasMatch) {
+          cls = "hl-dual";
+        }
+
+        elements.push(
+          <mark
+            key={`mark-${pStart}-${pEnd}`}
+            ref={(el) => {
+              if (el) spanRefs.current[origIdx] = el;
+            }}
+            className={`${cls}${isActive ? " hl-ring" : ""} cursor-pointer transition-all inline`}
+            onClick={() => onActivate(isActive ? null : origIdx)}
+            title={primary.h.note}
+          >
+            {subText}
+          </mark>
+        );
+      }
+    }
+
+    return elements;
+  };
 
   return (
     <div
@@ -93,28 +146,7 @@ function RenderedDocument({ doc, active, onActivate, filter, scrollRef }: Render
         className="flex-1 overflow-y-auto p-5 font-serif"
         style={{ fontSize: 14, lineHeight: 1.9, color: "var(--color-text-1)" }}
       >
-        {doc.text ? (
-          spans.map((sp, i) => {
-            if (!sp.hl || sp.hlIdx == null) return <span key={i}>{sp.text}</span>;
-            const cls = sp.hl.type === "ai" ? "hl-ai" : sp.hl.type === "sim" ? "hl-sim" : "hl-match";
-            const isActive = active === sp.hlIdx;
-            return (
-              <mark
-                key={i}
-                ref={(el) => {
-                  spanRefs.current[sp.hlIdx!] = el;
-                }}
-                className={`${cls}${isActive ? " hl-ring" : ""} cursor-pointer transition-all`}
-                onClick={() => onActivate(isActive ? null : sp.hlIdx!)}
-                title={sp.hl.note}
-              >
-                {sp.text}
-              </mark>
-            );
-          })
-        ) : (
-          <p className="text-slate-500 italic">No text content available.</p>
-        )}
+        {renderDocumentContent()}
       </div>
     </div>
   );

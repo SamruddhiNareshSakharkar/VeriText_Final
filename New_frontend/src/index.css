@@ -188,44 +188,64 @@ h1, h2, h3, h4, h5, h6 {
 
 /* ── Document highlight colours ── */
 .hl-ai {
-  background: rgba(204, 30, 30, 0.12);
-  border-bottom: 2px solid rgba(204, 30, 30, 0.55);
+  background: rgba(239, 68, 68, 0.22);
+  color: #dc2626;
+  border-bottom: 2.5px solid #ef4444;
   cursor: pointer;
-  border-radius: 1px;
-  transition: background 0.15s;
+  border-radius: 2px;
+  padding: 1px 2px;
+  transition: all 0.15s ease;
 }
-.hl-ai:hover, .hl-ai.active { background: rgba(204, 30, 30, 0.22); }
+.hl-ai:hover, .hl-ai.active {
+  background: rgba(239, 68, 68, 0.35);
+  color: #b91c1c;
+}
 
 .hl-sim {
-  background: rgba(176, 90, 0, 0.12);
-  border-bottom: 2px solid rgba(176, 90, 0, 0.55);
+  background: rgba(245, 158, 11, 0.22);
+  color: #d97706;
+  border-bottom: 2.5px solid #f59e0b;
   cursor: pointer;
-  border-radius: 1px;
-  transition: background 0.15s;
+  border-radius: 2px;
+  padding: 1px 2px;
+  transition: all 0.15s ease;
 }
-.hl-sim:hover, .hl-sim.active { background: rgba(176, 90, 0, 0.22); }
+.hl-sim:hover, .hl-sim.active {
+  background: rgba(245, 158, 11, 0.35);
+  color: #b45309;
+}
 
 .hl-match {
-  background: rgba(96, 37, 160, 0.12);
-  border-bottom: 2px solid rgba(96, 37, 160, 0.55);
+  background: rgba(147, 51, 234, 0.22);
+  color: #7e22ce;
+  border-bottom: 2.5px solid #9333ea;
   cursor: pointer;
-  border-radius: 1px;
-  transition: background 0.15s;
+  border-radius: 2px;
+  padding: 1px 2px;
+  transition: all 0.15s ease;
 }
-.hl-match:hover, .hl-match.active { background: rgba(96, 37, 160, 0.22); }
+.hl-match:hover, .hl-match.active {
+  background: rgba(147, 51, 234, 0.35);
+  color: #6b21a8;
+}
 
 .hl-dual {
-  background: rgba(147, 51, 234, 0.16);
-  border-bottom: 2px solid rgba(147, 51, 234, 0.7);
+  background: rgba(217, 70, 239, 0.25);
+  color: #a21caf;
+  border-bottom: 2.5px solid #d946ef;
   cursor: pointer;
-  border-radius: 1px;
-  transition: background 0.15s;
+  border-radius: 2px;
+  padding: 1px 2px;
+  transition: all 0.15s ease;
 }
-.hl-dual:hover, .hl-dual.active { background: rgba(147, 51, 234, 0.28); }
+.hl-dual:hover, .hl-dual.active {
+  background: rgba(217, 70, 239, 0.38);
+}
 
 .hl-ring {
-  outline: 2px solid #2255D3;
+  outline: 2.5px solid #2255D3;
   outline-offset: 2px;
+  box-shadow: 0 0 10px rgba(34, 85, 211, 0.35);
   border-radius: 2px;
 }
 

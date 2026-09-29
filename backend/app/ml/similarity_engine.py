@@ -126,6 +126,9 @@ class SimilarityEngine:
         # Combined weighted score
         final_score = round(min(100.0, (char_coverage * 70.0 + cosine_sim * 30.0)), 1)
 
+        # Filter redundant sub-matches in both documents
+        filtered_segments = self._filter_overlapping_segments(merged_segments)
+
         # Clean segments for output
         cleaned_segments = [
             {
@@ -136,7 +139,7 @@ class SimilarityEngine:
                 "text": s["text"],
                 "length": s["length"],
             }
-            for s in merged_segments
+            for s in filtered_segments
         ]
 
         return {
@@ -183,6 +186,34 @@ class SimilarityEngine:
 
         merged.append(curr)
         return merged
+
+    def _filter_overlapping_segments(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not segments:
+            return []
+
+        # 1. Filter subsets in Document A
+        sorted_segs = sorted(segments, key=lambda s: (s['start_a'], -(s['end_a'] - s['start_a'])))
+        filtered = []
+        max_end_a = -1
+        for s in sorted_segs:
+            if s['end_a'] <= max_end_a:
+                continue
+            filtered.append(s)
+            max_end_a = max(max_end_a, s['end_a'])
+
+        # 2. Filter internal subsets in Document B (prioritize longer matches)
+        result = []
+        for s in sorted(filtered, key=lambda x: -x['length']):
+            is_sub = any(
+                chosen['start_b'] <= s['start_b'] and chosen['end_b'] >= s['end_b']
+                for chosen in result
+            )
+            if not is_sub:
+                result.append(s)
+
+        # Sort back chronologically by start_a
+        result.sort(key=lambda s: s['start_a'])
+        return result
 
     def _compute_cosine_similarity(self, words_a: List[str], words_b: List[str]) -> float:
         if not words_a or not words_b:
