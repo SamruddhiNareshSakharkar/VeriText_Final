@@ -1,0 +1,10 @@
+{
+  "description": "Enhance academic integrity with a platform that enables universities to analyze assignments, detect similarities, and generate detailed reports for students and teachers.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

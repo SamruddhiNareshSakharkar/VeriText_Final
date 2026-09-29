@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+backend/venv/
+venv/
+.venv/
+
+# Build artifacts
+dist/
+build/
+New_frontend/dist/
+New_frontend/node_modules/
+.cache/
+.vite/
+*.tsbuildinfo
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+.pytest_cache/
+*.egg-info/
+
+# Databases and storage
+*.db
+*.sqlite
+*.sqlite3
+storage/uploads/*
+!storage/uploads/.gitkeep
+storage/reports/*
+!storage/reports/.gitkeep
+storage/*.pdf
+
+# IDE and OS
+.cursor/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*-debug.log*
+
+# Environment secrets
+.env
+.env.local
+.env.*.local
