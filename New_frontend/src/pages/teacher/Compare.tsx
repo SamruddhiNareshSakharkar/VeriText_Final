@@ -1,9 +1,16 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
 import PageHeader from "../../components/PageHeader";
 import Spinner from "../../components/Spinner";
 import Btn from "../../components/Btn";
 import { api } from "../../lib/api";
+
+/** Normalize span confidence to a 0-100 percentage regardless of input scale (0-1 or 0-100) */
+function toConfPct(val: unknown): number {
+  const n = Number(val);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n <= 1 ? Math.round(n * 100) : Math.round(n);
+}
 
 type HLType = "ai" | "sim" | "match";
 type FilterMode = "all" | HLType;
@@ -50,7 +57,7 @@ function RenderedDocument({ doc, active, onActivate, filter, scrollRef }: Render
     }
 
     if (visHL.length === 0) {
-      return <span>{doc.text}</span>;
+      return <span style={{ whiteSpace: "pre-wrap" }}>{doc.text}</span>;
     }
 
     // Collect all unique boundary points
@@ -79,7 +86,11 @@ function RenderedDocument({ doc, active, onActivate, filter, scrollRef }: Render
         .filter(({ h }) => (filter === "all" || h.type === filter) && h.start <= pStart && h.end >= pEnd);
 
       if (matchingHls.length === 0) {
-        elements.push(<span key={`txt-${pStart}-${pEnd}`}>{subText}</span>);
+        elements.push(
+          <span key={`txt-${pStart}-${pEnd}`} style={{ whiteSpace: "pre-wrap" }}>
+            {subText}
+          </span>
+        );
       } else {
         const primary = matchingHls[0];
         const origIdx = primary.originalIdx;
@@ -101,6 +112,7 @@ function RenderedDocument({ doc, active, onActivate, filter, scrollRef }: Render
             className={`${cls}${isActive ? " hl-ring" : ""} cursor-pointer transition-all inline`}
             onClick={() => onActivate(isActive ? null : origIdx)}
             title={primary.h.note}
+            style={{ whiteSpace: "pre-wrap" }}
           >
             {subText}
           </mark>
@@ -315,21 +327,23 @@ export default function Compare() {
 
     // AI spans Left
     aiA.forEach((span) => {
+      if (span.start == null || span.end == null || span.start >= span.end) return;
       hlLeft.push({
         start: span.start,
         end: span.end,
         type: "ai",
-        note: `AI-generated content (${Math.round(span.confidence * 100)}% confidence): ${span.reason || "Artificial stylometry"}`,
+        note: `AI-generated content (${toConfPct(span.confidence)}% confidence): ${span.reason || "Artificial stylometry"}`,
       });
     });
 
     // AI spans Right
     aiB.forEach((span) => {
+      if (span.start == null || span.end == null || span.start >= span.end) return;
       hlRight.push({
         start: span.start,
         end: span.end,
         type: "ai",
-        note: `AI-generated content (${Math.round(span.confidence * 100)}% confidence): ${span.reason || "Artificial stylometry"}`,
+        note: `AI-generated content (${toConfPct(span.confidence)}% confidence): ${span.reason || "Artificial stylometry"}`,
       });
     });
 

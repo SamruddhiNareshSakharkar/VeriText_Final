@@ -1,3 +1,10 @@
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
+os.environ["FLAGS_allocator_strategy"] = "auto_growth"
+os.environ["OMP_NUM_THREADS"] = "4"
+
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -136,20 +143,38 @@ def seed_demo_accounts():
 def health_check():
     return {"status": "healthy"}
 
-# Mount frontend assets and provide SPA fallback
+# Mount frontend assets and provide SPA fallback via middleware
+# (A catch-all @app.get route would shadow the API routers, so we use
+#  a Starlette middleware that only fires for non-API GET requests.)
 if frontend_dist.exists():
     assets_dir = frontend_dist / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        # If specific file in dist exists (e.g. favicon, robots.txt), serve it
-        file_path = frontend_dist / full_path
-        if full_path and file_path.is_file():
-            return FileResponse(file_path)
-        # Otherwise fallback to index.html for React Router
-        return FileResponse(frontend_dist / "index.html")
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import Response as StarletteResponse
+
+    class SPAFallbackMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            response = await call_next(request)
+            # Only serve index.html for GET requests that:
+            # 1. Are NOT API routes (/api/...)
+            # 2. Are NOT the health endpoint
+            # 3. Are NOT static assets
+            # 4. Returned 404 (i.e. no FastAPI route matched)
+            if (
+                request.method == "GET"
+                and response.status_code == 404
+                and not request.url.path.startswith("/api")
+                and not request.url.path.startswith("/assets")
+                and request.url.path != "/health"
+            ):
+                index_path = frontend_dist / "index.html"
+                if index_path.is_file():
+                    return FileResponse(index_path)
+            return response
+
+    app.add_middleware(SPAFallbackMiddleware)
 else:
     @app.get("/")
     def root_status():
@@ -159,4 +184,3 @@ else:
             "status": "online",
             "description": "Academic Collaboration & Assignment Integrity Engine"
         }
-

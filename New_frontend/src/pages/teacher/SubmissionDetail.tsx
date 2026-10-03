@@ -53,9 +53,10 @@ export default function SubmissionDetail() {
   const markRefs = useRef<Record<string, HTMLElement | null>>({});
   const [loading, setLoading] = useState(true);
   const [reanalyzing, setReanalyzing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [analysisData, setAnalysisData] = useState<any>(null);
   const [flagged, setFlagged] = useState(false);
+  const [ocrExpanded, setOcrExpanded] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Editable Grading State
   const [gradeData, setGradeData] = useState<any>(null);
@@ -79,9 +80,6 @@ export default function SubmissionDetail() {
       const data = await api.submissions.getAnalysis(submissionId);
       setAnalysisData(data);
     } catch (err: any) {
-      // #region agent log
-      fetch('http://127.0.0.1:7269/ingest/5765b5d4-be54-401c-a6dd-2cbc0c00d0c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7d2f9e'},body:JSON.stringify({sessionId:'7d2f9e',runId:'pre-fix',hypothesisId:'D',location:'SubmissionDetail.tsx:loadAnalysis',message:'analysis fetch failed',data:{msg:String(err?.message||err),status:err?.status||null,id:submissionId},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       setError(err?.message || "Failed to load submission analysis.");
     } finally {
       setLoading(false);
@@ -180,9 +178,6 @@ export default function SubmissionDetail() {
   const detectedSpans: any[] = Array.isArray(ai?.detected_spans) ? ai.detected_spans : [];
 
   const maxMarks = gradeData?.max_marks || sub.max_marks || 100;
-  // #region agent log
-  fetch('http://127.0.0.1:7269/ingest/5765b5d4-be54-401c-a6dd-2cbc0c00d0c0',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'7d2f9e'},body:JSON.stringify({sessionId:'7d2f9e',runId:'pre-fix',hypothesisId:'B',location:'SubmissionDetail.tsx:render',message:'teacher detail render',data:{hasAi:Boolean(ai),hasOcr:Boolean(ocr),hasHw:Boolean(hw),aiScoreType:typeof (ai&&ai.score),aiScoreVal,simScoreVal,hwConfidenceVal,spanIsArray:Array.isArray(ai?.detected_spans),spanLen:detectedSpans.length,status:sub.status||null},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
 
   const pipelineSteps = [
     {
@@ -267,7 +262,7 @@ export default function SubmissionDetail() {
   function renderHighlightedDocument(fullText: string, activeList: any[]) {
     if (!fullText) return null;
     if (!activeList || activeList.length === 0) {
-      return <span>{fullText}</span>;
+      return <span style={{ whiteSpace: "pre-wrap" }}>{fullText}</span>;
     }
 
     const pointsSet = new Set<number>([0, fullText.length]);
@@ -292,7 +287,11 @@ export default function SubmissionDetail() {
       const matchingHls = activeList.filter((h) => h.start <= pStart && h.end >= pEnd);
 
       if (matchingHls.length === 0) {
-        elements.push(<span key={`txt-${pStart}-${pEnd}`}>{subText}</span>);
+        elements.push(
+          <span key={`txt-${pStart}-${pEnd}`} style={{ whiteSpace: "pre-wrap" }}>
+            {subText}
+          </span>
+        );
       } else {
         const hasAi = matchingHls.some((h) => h.type === "ai");
         const hasSim = matchingHls.some((h) => h.type === "similarity");
@@ -319,10 +318,7 @@ export default function SubmissionDetail() {
             onClick={() => setActiveHLId(isSelected ? null : primaryHl.id)}
             className={`${cls}${isSelected ? " hl-ring ring-2 ring-indigo-500 font-semibold" : ""} cursor-pointer transition-all inline`}
             title={`${badgeText}: ${primaryHl.reason}`}
-            style={{
-              padding: "2px 4px",
-              borderRadius: "2px",
-            }}
+            style={{ whiteSpace: "pre-wrap" }}
           >
             {subText}
           </mark>
@@ -332,6 +328,7 @@ export default function SubmissionDetail() {
 
     return elements;
   }
+
 
   return (
     <div>
@@ -665,23 +662,54 @@ export default function SubmissionDetail() {
                 OCR Text Extraction Engine Completed
               </span>
             </div>
+            {/* OCR Review Warning Banner */}
+            {Boolean(ocr?.needs_review || (ocr?.flagged_lines_count && ocr.flagged_lines_count > 0)) && (
+              <div className="flex items-center gap-2.5 p-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-300 text-xs font-medium">
+                <span className="text-base">⚠️</span>
+                <span>
+                  <strong>Confidence Review Flagged:</strong> {ocr.flagged_lines_count || 1} line(s) contain uncertain or low-confidence characters requiring teacher inspection.
+                </span>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
               <div>
                 <p className="font-semibold uppercase tracking-wider mb-2" style={{ fontSize: 10.5, color: "var(--color-text-3)" }}>
-                  OCR Metadata
+                  OCR Pipeline & Document Metadata
                 </p>
                 <div className="rounded-xl px-4" style={{ border: "1px solid var(--color-border)" }}>
+                  <Row label="Document Classification" value={ocr?.doc_type ? ocr.doc_type.replace('_', ' ').toUpperCase() : "STANDARD"} />
+                  <Row label="Recognition Confidence" value={ocr?.avg_confidence ? `${Math.round(ocr.avg_confidence * 100)}%` : "—"} />
                   <Row label="Words extracted" value={ocr?.word_count ?? "—"} />
+                  <Row label="Review Flags" value={ocr?.flagged_lines_count ? `${ocr.flagged_lines_count} lines flagged` : "None (High confidence)"} />
                   <Row label="Status" value={ocr?.status || "complete"} />
                   <Row label="File processed" value={sub.file_name || "—"} />
                 </div>
               </div>
               <div>
-                <p className="font-semibold uppercase tracking-wider mb-2" style={{ fontSize: 10.5, color: "var(--color-text-3)" }}>
-                  Extracted Text
-                </p>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <p className="font-semibold uppercase tracking-wider" style={{ fontSize: 10.5, color: "var(--color-text-3)" }}>
+                      Reconstructed Document Text
+                    </p>
+                    {ocr?.extracted_text && (
+                      <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                        {ocr.extracted_text.split('\n').filter((l: string) => l.trim().length > 0).length} lines • {ocr.extracted_text.length} chars
+                      </span>
+                    )}
+                  </div>
+                  {ocr?.extracted_text && ocr.extracted_text.split('\n').length > 10 && (
+                    <button
+                      type="button"
+                      onClick={() => setOcrExpanded(!ocrExpanded)}
+                      className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      {ocrExpanded ? "Collapse View ↑" : "Expand All Lines ↓"}
+                    </button>
+                  )}
+                </div>
                 <div
-                  className="rounded-xl p-4 font-mono overflow-y-auto whitespace-pre-wrap"
+                  className="rounded-xl p-4 font-mono overflow-y-auto whitespace-pre-wrap transition-all duration-200"
                   style={{
                     border: "1px solid var(--color-border)",
                     background: "var(--color-canvas)",
@@ -689,7 +717,7 @@ export default function SubmissionDetail() {
                     color: "var(--color-text-2)",
                     lineHeight: 1.7,
                     minHeight: 200,
-                    maxHeight: 340,
+                    maxHeight: ocrExpanded ? 800 : 340,
                   }}
                 >
                   {ocr?.extracted_text || "No text extracted."}
@@ -701,24 +729,67 @@ export default function SubmissionDetail() {
 
         {tab === "ai" && (
           <div className="space-y-5">
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               {[
-                { label: "AI Score", value: ai ? `${aiScoreVal.toFixed(1)}%` : "0%" },
-                { label: "Confidence", value: ai ? `${(ai.confidence * 100).toFixed(0)}%` : "—" },
-                { label: "Perplexity", value: ai?.perplexity != null ? ai.perplexity.toFixed(1) : "—" },
-              ].map(({ label, value }) => (
+                { label: "AI Score", value: ai ? `${aiScoreVal.toFixed(1)}%` : "0%", color: aiScoreVal >= 50 ? "var(--color-red)" : "var(--color-green)" },
+                { label: "Confidence", value: ai ? `${asPercent(ai.confidence).toFixed(0)}%` : "—", color: "var(--color-text-1)" },
+                { label: "Perplexity", value: ai?.perplexity != null ? Number(ai.perplexity).toFixed(1) : "—", color: "var(--color-text-1)" },
+                { label: "Burstiness", value: ai?.burstiness != null ? `${Number(ai.burstiness).toFixed(1)}%` : "—", color: "var(--color-text-1)" },
+              ].map(({ label, value, color }) => (
                 <div
                   key={label}
                   className="rounded-xl p-5 text-center"
                   style={{ border: "1px solid var(--color-border)", background: "var(--color-canvas)" }}
                 >
                   <p style={{ fontSize: 11, color: "var(--color-text-4)", marginBottom: 8 }}>{label}</p>
-                  <p className="font-semibold font-mono" style={{ fontSize: 26, color: "var(--color-text-1)" }}>
+                  <p className="font-semibold font-mono" style={{ fontSize: 24, color }}>
                     {value}
                   </p>
                 </div>
               ))}
             </div>
+
+            {/* Classification badge */}
+            {ai?.analysis_metadata?.classification && (
+              <div className="flex items-center gap-3 p-3 rounded-lg" style={{
+                background: aiScoreVal >= 65 ? "rgba(239, 68, 68, 0.08)" : aiScoreVal >= 35 ? "rgba(245, 158, 11, 0.08)" : "rgba(34, 197, 94, 0.08)",
+                border: `1px solid ${aiScoreVal >= 65 ? "rgba(239, 68, 68, 0.25)" : aiScoreVal >= 35 ? "rgba(245, 158, 11, 0.25)" : "rgba(34, 197, 94, 0.25)"}`,
+              }}>
+                <span className="text-base">{aiScoreVal >= 65 ? "🤖" : aiScoreVal >= 35 ? "⚠️" : "✅"}</span>
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wider" style={{
+                    color: aiScoreVal >= 65 ? "#ef4444" : aiScoreVal >= 35 ? "#f59e0b" : "#22c55e"
+                  }}>
+                    {ai.analysis_metadata.classification}
+                  </span>
+                  {ai.analysis_metadata?.evidence?.length > 0 && (
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {ai.analysis_metadata.evidence[0]}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Feature breakdown */}
+            {ai?.analysis_metadata?.features && (
+              <div>
+                <p className="font-semibold text-xs uppercase tracking-wider text-slate-400 mb-2">Stylometric Features</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  {[
+                    { label: "Sentence Variation", value: ai.analysis_metadata.features.sentence_variation != null ? (ai.analysis_metadata.features.sentence_variation * 100).toFixed(1) + "%" : "—" },
+                    { label: "Vocabulary Richness (TTR)", value: ai.analysis_metadata.features.ttr != null ? (ai.analysis_metadata.features.ttr * 100).toFixed(1) + "%" : "—" },
+                    { label: "Phrase Markers", value: ai.analysis_metadata.features.keyword_hits != null ? String(ai.analysis_metadata.features.keyword_hits) : "0" },
+                    { label: "Entropy", value: ai.analysis_metadata.features.entropy != null ? Number(ai.analysis_metadata.features.entropy).toFixed(2) : "—" },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="p-2.5 rounded-lg text-center" style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+                      <p className="text-[10px] text-slate-400 mb-0.5">{label}</p>
+                      <p className="text-sm font-mono font-medium" style={{ color: "var(--color-text-2)" }}>{value}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {detectedSpans.length > 0 ? (
               <div className="space-y-3">
@@ -853,24 +924,74 @@ export default function SubmissionDetail() {
         {tab === "handwriting" && (
           <div className="space-y-4">
             {hw ? (
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <div className="p-4 rounded-xl text-center" style={{ background: "var(--color-canvas)", border: "1px solid var(--color-border)" }}>
-                  <p className="text-xs text-slate-400 mb-1">Slant Angle</p>
-                  <p className="font-mono text-xl font-semibold">{hw.slant_angle}°</p>
+              <>
+                {/* Document classification badge */}
+                <div className="flex items-center gap-3 p-3 rounded-lg" style={{
+                  background: hwConfidenceVal >= 65 ? "rgba(99, 102, 241, 0.08)" : hwConfidenceVal >= 35 ? "rgba(245, 158, 11, 0.08)" : "rgba(107, 114, 128, 0.08)",
+                  border: `1px solid ${hwConfidenceVal >= 65 ? "rgba(99, 102, 241, 0.25)" : hwConfidenceVal >= 35 ? "rgba(245, 158, 11, 0.25)" : "rgba(107, 114, 128, 0.25)"}`,
+                }}>
+                  <span className="text-base">{hwConfidenceVal >= 65 ? "✍️" : hwConfidenceVal >= 35 ? "📝" : "🖨️"}</span>
+                  <div>
+                    <span className="text-xs font-semibold uppercase tracking-wider" style={{
+                      color: hwConfidenceVal >= 65 ? "#6366f1" : hwConfidenceVal >= 35 ? "#f59e0b" : "#6b7280"
+                    }}>
+                      {hw.metrics?.document_classification === "handwritten"
+                        ? "Handwritten Document Detected"
+                        : hw.metrics?.document_classification === "mixed"
+                        ? "Mixed Content (Handwritten + Printed)"
+                        : "Printed / Digital Document"}
+                    </span>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {hwConfidenceVal >= 65
+                        ? "Computer vision analysis confirms handwritten stroke patterns with high confidence."
+                        : hwConfidenceVal >= 35
+                        ? "Document appears to contain both handwritten and printed elements."
+                        : "Document appears to be digitally generated or printed. Handwriting features are minimal."}
+                    </p>
+                  </div>
                 </div>
-                <div className="p-4 rounded-xl text-center" style={{ background: "var(--color-canvas)", border: "1px solid var(--color-border)" }}>
-                  <p className="text-xs text-slate-400 mb-1">Stroke Variance</p>
-                  <p className="font-mono text-xl font-semibold">{hw.stroke_variance}</p>
+
+                {/* Core metrics */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="p-4 rounded-xl text-center" style={{ background: "var(--color-canvas)", border: "1px solid var(--color-border)" }}>
+                    <p className="text-xs text-slate-400 mb-1">Slant Angle</p>
+                    <p className="font-mono text-xl font-semibold">{hw.slant_angle}°</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">{Math.abs(hw.slant_angle) <= 3 ? "Upright" : hw.slant_angle > 0 ? "Right-leaning" : "Left-leaning"}</p>
+                  </div>
+                  <div className="p-4 rounded-xl text-center" style={{ background: "var(--color-canvas)", border: "1px solid var(--color-border)" }}>
+                    <p className="text-xs text-slate-400 mb-1">Stroke Variance</p>
+                    <p className="font-mono text-xl font-semibold">{hw.stroke_variance}</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">{hw.stroke_variance >= 2 ? "High (handwritten)" : hw.stroke_variance >= 0.5 ? "Medium" : "Low (printed)"}</p>
+                  </div>
+                  <div className="p-4 rounded-xl text-center" style={{ background: "var(--color-canvas)", border: "1px solid var(--color-border)" }}>
+                    <p className="text-xs text-slate-400 mb-1">Spacing Rhythm</p>
+                    <p className="font-mono text-xl font-semibold">{hw.spacing_rhythm} px</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">Line spacing average</p>
+                  </div>
+                  <div className="p-4 rounded-xl text-center" style={{ background: "var(--color-canvas)", border: "1px solid var(--color-border)" }}>
+                    <p className="text-xs text-slate-400 mb-1">HW Confidence</p>
+                    <p className="font-mono text-xl font-semibold" style={{
+                      color: hwConfidenceVal >= 65 ? "#6366f1" : hwConfidenceVal >= 35 ? "#f59e0b" : "var(--color-text-3)"
+                    }}>{hwConfidenceVal.toFixed(0)}%</p>
+                    <p className="text-[10px] text-slate-500 mt-0.5">Handwriting probability</p>
+                  </div>
                 </div>
-                <div className="p-4 rounded-xl text-center" style={{ background: "var(--color-canvas)", border: "1px solid var(--color-border)" }}>
-                  <p className="text-xs text-slate-400 mb-1">Spacing Rhythm</p>
-                  <p className="font-mono text-xl font-semibold">{hw.spacing_rhythm} px</p>
-                </div>
-                <div className="p-4 rounded-xl text-center" style={{ background: "var(--color-canvas)", border: "1px solid var(--color-border)" }}>
-                  <p className="text-xs text-slate-400 mb-1">Confidence</p>
-                  <p className="font-mono text-xl font-semibold">{hwConfidenceVal.toFixed(0)}%</p>
-                </div>
-              </div>
+
+                {/* Additional metrics */}
+                {hw.metrics && (
+                  <div>
+                    <p className="font-semibold text-xs uppercase tracking-wider text-slate-400 mb-2">Detailed CV Metrics</p>
+                    <div className="rounded-xl px-4" style={{ border: "1px solid var(--color-border)" }}>
+                      <Row label="Ink Density" value={hw.metrics.ink_density != null ? `${(hw.metrics.ink_density * 100).toFixed(1)}%` : "—"} />
+                      <Row label="Estimated Lines" value={hw.metrics.line_count_estimate ?? "—"} />
+                      <Row label="Resolution" value={hw.metrics.resolution ?? "—"} />
+                      <Row label="Stroke Mean" value={hw.metrics.stroke_mean != null ? `${hw.metrics.stroke_mean} px` : "—"} />
+                      <Row label="Spacing CV" value={hw.metrics.spacing_cv != null ? hw.metrics.spacing_cv.toFixed(3) : "—"} />
+                      <Row label="Analysis Method" value={hw.metrics.analysis_technique ?? "Computer vision stylometry"} />
+                    </div>
+                  </div>
+                )}
+              </>
             ) : (
               <Placeholder text="Handwriting analysis is active for scanned images and physical assignment uploads." />
             )}

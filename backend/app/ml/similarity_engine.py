@@ -174,12 +174,18 @@ class SimilarityEngine:
                 curr["text"] = text_a[curr["start_a"]:curr["end_a"]]
                 curr["length"] = len(curr["text"])
             elif nxt["start_a"] < curr["end_a"]:
-                # Overlapping match: extend curr if nxt reaches further
-                if nxt["end_a"] > curr["end_a"]:
-                    curr["end_a"] = nxt["end_a"]
-                    curr["end_b"] = max(curr["end_b"], nxt["end_b"])
-                    curr["text"] = text_a[curr["start_a"]:curr["end_a"]]
-                    curr["length"] = len(curr["text"])
+                # Overlapping match in A: ONLY extend if the match in B is also contiguous or overlapping
+                # If nxt matches a completely different part of doc B, it must remain a separate match
+                b_contiguous = (0 <= (nxt["start_b"] - curr["end_b"]) <= 28) or (curr["start_b"] <= nxt["start_b"] <= curr["end_b"])
+                if b_contiguous:
+                    if nxt["end_a"] > curr["end_a"]:
+                        curr["end_a"] = nxt["end_a"]
+                        curr["end_b"] = max(curr["end_b"], nxt["end_b"])
+                        curr["text"] = text_a[curr["start_a"]:curr["end_a"]]
+                        curr["length"] = len(curr["text"])
+                else:
+                    merged.append(curr)
+                    curr = nxt
             else:
                 merged.append(curr)
                 curr = nxt

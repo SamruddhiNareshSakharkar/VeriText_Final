@@ -79,13 +79,38 @@ def run_submission_analysis_pipeline(submission_id: str):
             return
 
         # -------------------------------------------------------------
-        # STEP 2: AI CONTENT DETECTION
+        # STEP 2: AI CONTENT DETECTION (QUALITY-GATED)
         # -------------------------------------------------------------
         job.status = "processing_ai"
         job.current_step = "Evaluating stylometric entropy, perplexity, and AI probability"
         db.commit()
 
-        ai_data = ai_detector.analyze_text(extracted_text)
+        ocr_words = [w for w in extracted_text.split() if any(c.isalpha() for c in w)]
+        ocr_confidence = ocr_data.get("confidence", 1.0)
+        needs_review = ocr_data.get("needs_review", False)
+        doc_type = ocr_data.get("doc_type", "digital_pdf")
+
+        # If OCR text is empty, heavily distorted, or an uncertain handwritten scan,
+        # do NOT guess or hallucinate AI probability over OCR noise artifacts.
+        if len(ocr_words) < 15 or (ocr_confidence < 0.68 and needs_review and doc_type in ("handwritten", "mixed")):
+            ai_data = {
+                "score": 0.0,
+                "confidence": ocr_confidence,
+                "perplexity": 0.0,
+                "burstiness": 0.0,
+                "entropy": 0.0,
+                "detected_spans": [],
+                "classification": "Manual Review Required",
+                "analysis_metadata": {
+                    "word_count": len(ocr_words),
+                    "sentence_count": 0,
+                    "classification": "Manual Review Required",
+                    "evidence": ["Handwritten document flagged for teacher inspection — AI detection withheld on low-confidence OCR transcription."],
+                    "ocr_needs_review": True
+                }
+            }
+        else:
+            ai_data = ai_detector.analyze_text(extracted_text)
 
         existing_ai = db.query(AIAnalysis).filter(AIAnalysis.submission_id == submission_id).first()
         if existing_ai:
@@ -167,8 +192,32 @@ def run_submission_analysis_pipeline(submission_id: str):
         job.current_step = "Extracting handwriting stroke and slant geometric characteristics"
         db.commit()
 
-        hw_data = handwriting_engine.analyze_document(str(abs_file_path))
-        hw_feature_vec = hw_data.get("feature_vector", [])
+        # Check if current document contains handwritten pages
+        ocr_doc_type = ocr_data.get("doc_type", "digital_pdf")
+        is_current_hw = (
+            ocr_doc_type in ("handwritten", "mixed") or
+            any(p.get("doc_type") in ("handwritten", "mixed") for p in ocr_data.get("pages", []))
+        )
+
+        if is_current_hw:
+            hw_data = handwriting_engine.analyze_document(str(abs_file_path))
+            if "metrics" not in hw_data or not isinstance(hw_data["metrics"], dict):
+                hw_data["metrics"] = {}
+            hw_data["metrics"]["is_handwritten"] = True
+            hw_data["metrics"]["doc_type"] = ocr_doc_type
+            hw_feature_vec = hw_data.get("feature_vector", [])
+        else:
+            # Digital or printed document — skip handwriting vector to prevent false positive match
+            hw_data = {
+                "slant_angle": 0.0,
+                "stroke_variance": 0.0,
+                "spacing_rhythm": 0.0,
+                "aspect_ratio": 0.0,
+                "feature_vector": [],
+                "metrics": {"is_handwritten": False, "doc_type": ocr_doc_type},
+                "confidence": 0.0
+            }
+            hw_feature_vec = []
 
         existing_hw = db.query(HandwritingAnalysis).filter(HandwritingAnalysis.submission_id == submission_id).first()
         if existing_hw:
@@ -196,10 +245,17 @@ def run_submission_analysis_pipeline(submission_id: str):
         # Update pairwise handwriting similarity across peer submissions
         for other_sub in other_submissions:
             other_hw = db.query(HandwritingAnalysis).filter(HandwritingAnalysis.submission_id == other_sub.id).first()
-            if not other_hw or not other_hw.feature_vector_json or not hw_feature_vec:
-                continue
+            other_is_hw = bool(
+                other_hw and
+                (other_hw.metrics_json or {}).get("is_handwritten", False) and
+                len(other_hw.feature_vector_json or []) > 0
+            )
 
-            hw_sim = handwriting_engine.compare_handwriting(hw_feature_vec, other_hw.feature_vector_json)
+            # ONLY compare handwriting if BOTH documents are confirmed handwritten
+            if is_current_hw and other_is_hw and hw_feature_vec and other_hw and other_hw.feature_vector_json:
+                hw_sim = handwriting_engine.compare_handwriting(hw_feature_vec, other_hw.feature_vector_json)
+            else:
+                hw_sim = 0.0
 
             sim_record = (
                 db.query(SimilarityResult)

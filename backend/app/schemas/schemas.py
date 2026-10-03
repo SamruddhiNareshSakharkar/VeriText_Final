@@ -139,11 +139,11 @@ class SubmissionOut(BaseModel):
 
 # --- ANALYSIS SCHEMAS ---
 class DetectedSpan(BaseModel):
-    start: int
-    end: int
-    text: str
-    confidence: float
-    reason: str
+    start: int = 0
+    end: int = 0
+    text: Optional[str] = ""
+    confidence: Optional[float] = 0.85
+    reason: Optional[str] = "AI generated content"
 
 class AIAnalysisOut(BaseModel):
     id: str
@@ -163,6 +163,10 @@ class OCRPage(BaseModel):
     page_number: int
     text: str
     line_count: int
+    doc_type: Optional[str] = "scanned_printed"
+    avg_confidence: Optional[float] = 1.0
+    flagged_lines_count: Optional[int] = 0
+    lines: Optional[List[Dict[str, Any]]] = []
 
 class OCRResultOut(BaseModel):
     id: str
@@ -171,9 +175,14 @@ class OCRResultOut(BaseModel):
     pages: List[OCRPage] = []
     word_count: int
     status: str
+    doc_type: Optional[str] = None
+    avg_confidence: Optional[float] = None
+    flagged_lines_count: Optional[int] = None
+    needs_review: Optional[bool] = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
 
 class MatchingSegment(BaseModel):
     start_a: int

@@ -52,8 +52,7 @@ async def submit_assignment_document(
     if not is_member and assignment.team_id:
         auto_member = TeamMember(
             team_id=assignment.team_id,
-            user_id=current_user.id,
-            role=current_user.role if current_user.role in ["student", "teacher"] else "student"
+            user_id=current_user.id
         )
         db.add(auto_member)
         db.commit()
@@ -185,7 +184,15 @@ def build_enriched_submission_out(s: Submission, db: Session) -> SubmissionOut:
         other_sub = r.submission_b if r.submission_a_id == s.id else r.submission_a
         other_name = other_sub.student.full_name if (other_sub and other_sub.student) else "Student"
 
-        if (r.handwriting_score or 0.0) >= 70.0 and not hw_match_flag:
+        # Check if both submissions are actually handwritten
+        hw_a = s.handwriting_analysis
+        hw_b = other_sub.handwriting_analysis if other_sub else None
+        both_hw = bool(
+            hw_a and (hw_a.metrics_json or {}).get("is_handwritten", False) and len(hw_a.feature_vector_json or []) > 0 and
+            hw_b and (hw_b.metrics_json or {}).get("is_handwritten", False) and len(hw_b.feature_vector_json or []) > 0
+        )
+
+        if (r.handwriting_score or 0.0) >= 70.0 and both_hw and not hw_match_flag:
             hw_match_flag = f"Same handwriting as {other_name} ({round(r.handwriting_score, 1)}%)"
 
         if (r.score or 0.0) >= 60.0 and not ai_match_flag:

@@ -94,6 +94,26 @@ def get_submission_analysis(
 
     ai_out = None
     if ai:
+        spans = ai.detected_spans_json or []
+
+        # Live fallback: if no spans stored (e.g. old analysis record) but OCR text exists,
+        # run the updated detector now and persist results for next load
+        if not spans and ocr and ocr.extracted_text and len(ocr.extracted_text.strip()) > 30:
+            try:
+                live = ai_detector.analyze_text(ocr.extracted_text)
+                spans = live.get("detected_spans", [])
+                # Persist improved spans + updated metrics back to DB
+                ai.detected_spans_json = spans
+                ai.score = live.get("score", ai.score)
+                ai.confidence = live.get("confidence", ai.confidence)
+                ai.perplexity = live.get("perplexity", ai.perplexity)
+                ai.burstiness = live.get("burstiness", ai.burstiness)
+                ai.entropy = live.get("entropy", ai.entropy)
+                ai.analysis_metadata_json = live.get("analysis_metadata", ai.analysis_metadata_json or {})
+                db.commit()
+            except Exception:
+                spans = []
+
         ai_out = AIAnalysisOut(
             id=ai.id,
             submission_id=ai.submission_id,
@@ -102,20 +122,31 @@ def get_submission_analysis(
             perplexity=ai.perplexity,
             burstiness=ai.burstiness,
             entropy=ai.entropy,
-            detected_spans=ai.detected_spans_json or [],
+            detected_spans=spans,
             analysis_metadata=ai.analysis_metadata_json or {},
             created_at=ai.created_at
         )
 
     ocr_out = None
     if ocr:
+        pages_list = ocr.pages_json or []
+        doc_type = pages_list[0].get("doc_type") if pages_list else None
+        avg_conf = (
+            round(sum(p.get("avg_confidence", 0.0) for p in pages_list) / max(len(pages_list), 1), 3)
+            if pages_list else 1.0
+        )
+        total_flags = sum(p.get("flagged_lines_count", 0) for p in pages_list)
         ocr_out = OCRResultOut(
             id=ocr.id,
             submission_id=ocr.submission_id,
             extracted_text=ocr.extracted_text,
-            pages=ocr.pages_json or [],
+            pages=pages_list,
             word_count=ocr.word_count,
             status=ocr.status,
+            doc_type=doc_type,
+            avg_confidence=avg_conf,
+            flagged_lines_count=total_flags,
+            needs_review=total_flags > 0,
             created_at=ocr.created_at
         )
 
@@ -214,14 +245,56 @@ def compare_two_submissions(
     ai_b = db.query(AIAnalysis).filter(AIAnalysis.submission_id == sub_b.id).first()
 
     spans_a = ai_a.detected_spans_json if (ai_a and ai_a.detected_spans_json) else []
+    score_a = ai_a.score if ai_a else 0.0
+    conf_a = ai_a.confidence if ai_a else 0.0
+    perp_a = ai_a.perplexity if ai_a else None
+    burst_a = ai_a.burstiness if ai_a else None
+    ent_a = ai_a.entropy if ai_a else None
+    meta_a = ai_a.analysis_metadata_json if ai_a else {}
+
     if not spans_a and text_a and len(text_a.strip()) > 30:
-        live_ai_a = ai_detector.analyze_text(text_a)
-        spans_a = live_ai_a.get("detected_spans", [])
+        try:
+            live_ai_a = ai_detector.analyze_text(text_a)
+            spans_a = live_ai_a.get("detected_spans", [])
+            score_a = live_ai_a.get("score", score_a)
+            conf_a = live_ai_a.get("confidence", conf_a)
+            perp_a = live_ai_a.get("perplexity", perp_a)
+            burst_a = live_ai_a.get("burstiness", burst_a)
+            ent_a = live_ai_a.get("entropy", ent_a)
+            meta_a = live_ai_a.get("analysis_metadata", meta_a)
+            if ai_a:
+                ai_a.detected_spans_json = spans_a
+                ai_a.score = score_a
+                ai_a.confidence = conf_a
+                db.commit()
+        except Exception:
+            pass
 
     spans_b = ai_b.detected_spans_json if (ai_b and ai_b.detected_spans_json) else []
+    score_b = ai_b.score if ai_b else 0.0
+    conf_b = ai_b.confidence if ai_b else 0.0
+    perp_b = ai_b.perplexity if ai_b else None
+    burst_b = ai_b.burstiness if ai_b else None
+    ent_b = ai_b.entropy if ai_b else None
+    meta_b = ai_b.analysis_metadata_json if ai_b else {}
+
     if not spans_b and text_b and len(text_b.strip()) > 30:
-        live_ai_b = ai_detector.analyze_text(text_b)
-        spans_b = live_ai_b.get("detected_spans", [])
+        try:
+            live_ai_b = ai_detector.analyze_text(text_b)
+            spans_b = live_ai_b.get("detected_spans", [])
+            score_b = live_ai_b.get("score", score_b)
+            conf_b = live_ai_b.get("confidence", conf_b)
+            perp_b = live_ai_b.get("perplexity", perp_b)
+            burst_b = live_ai_b.get("burstiness", burst_b)
+            ent_b = live_ai_b.get("entropy", ent_b)
+            meta_b = live_ai_b.get("analysis_metadata", meta_b)
+            if ai_b:
+                ai_b.detected_spans_json = spans_b
+                ai_b.score = score_b
+                ai_b.confidence = conf_b
+                db.commit()
+        except Exception:
+            pass
 
     hw_a = db.query(HandwritingAnalysis).filter(HandwritingAnalysis.submission_id == sub_a.id).first()
     hw_b = db.query(HandwritingAnalysis).filter(HandwritingAnalysis.submission_id == sub_b.id).first()
@@ -241,25 +314,25 @@ def compare_two_submissions(
         ai_analysis_a=AIAnalysisOut(
             id=ai_a.id if ai_a else str(uuid.uuid4()),
             submission_id=sub_a.id,
-            score=ai_a.score if ai_a else 0.0,
-            confidence=ai_a.confidence if ai_a else 0.0,
-            perplexity=ai_a.perplexity if ai_a else None,
-            burstiness=ai_a.burstiness if ai_a else None,
-            entropy=ai_a.entropy if ai_a else None,
+            score=score_a,
+            confidence=conf_a,
+            perplexity=perp_a,
+            burstiness=burst_a,
+            entropy=ent_a,
             detected_spans=spans_a,
-            analysis_metadata=ai_a.analysis_metadata_json if ai_a else {},
+            analysis_metadata=meta_a,
             created_at=ai_a.created_at if ai_a else datetime.now(timezone.utc)
         ),
         ai_analysis_b=AIAnalysisOut(
             id=ai_b.id if ai_b else str(uuid.uuid4()),
             submission_id=sub_b.id,
-            score=ai_b.score if ai_b else 0.0,
-            confidence=ai_b.confidence if ai_b else 0.0,
-            perplexity=ai_b.perplexity if ai_b else None,
-            burstiness=ai_b.burstiness if ai_b else None,
-            entropy=ai_b.entropy if ai_b else None,
+            score=score_b,
+            confidence=conf_b,
+            perplexity=perp_b,
+            burstiness=burst_b,
+            entropy=ent_b,
             detected_spans=spans_b,
-            analysis_metadata=ai_b.analysis_metadata_json if ai_b else {},
+            analysis_metadata=meta_b,
             created_at=ai_b.created_at if ai_b else datetime.now(timezone.utc)
         ),
         handwriting_a=HandwritingAnalysisOut(
@@ -345,7 +418,13 @@ def get_cohort_analytics(
                 "score": p.score,
                 "matched_segments_count": len(p.matching_segments_json or [])
             })
-        if (p.handwriting_score or 0.0) >= 70.0:
+        hw_a = p.submission_a.handwriting_analysis if p.submission_a else None
+        hw_b = p.submission_b.handwriting_analysis if p.submission_b else None
+        both_hw = bool(
+            hw_a and (hw_a.metrics_json or {}).get("is_handwritten", False) and len(hw_a.feature_vector_json or []) > 0 and
+            hw_b and (hw_b.metrics_json or {}).get("is_handwritten", False) and len(hw_b.feature_vector_json or []) > 0
+        )
+        if (p.handwriting_score or 0.0) >= 70.0 and both_hw:
             flagged_handwriting_pairs.append({
                 "id": p.id,
                 "submission_a_id": p.submission_a_id,
