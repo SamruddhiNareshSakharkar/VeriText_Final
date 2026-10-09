@@ -164,6 +164,18 @@ export const api = {
     get: (id: string) => apiRequest<any>(`/submissions/${id}`),
     mySubmissions: () => apiRequest<any[]>('/submissions/me'),
     getAnalysis: (id: string) => apiRequest<any>(`/submissions/${id}/analysis`),
+    downloadFileUrl: (id: string) => {
+      const token = localStorage.getItem('veritext_token') || '';
+      return `${API_BASE}/submissions/${id}/file${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    },
+    annotatedPdfUrl: (id: string) => {
+      const token = localStorage.getItem('veritext_token') || '';
+      return `${API_BASE}/submissions/${id}/annotated-pdf${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    },
+    downloadReportUrl: (id: string) => {
+      const token = localStorage.getItem('veritext_token') || '';
+      return `${API_BASE}/submissions/${id}/report-card/pdf${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+    },
   },
 
   // Comparison

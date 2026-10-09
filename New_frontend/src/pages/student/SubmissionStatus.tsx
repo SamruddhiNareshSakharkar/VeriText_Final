@@ -154,9 +154,16 @@ export default function SubmissionStatus() {
   const hw = analysis?.handwriting_analysis;
   const simScore = analysis?.max_similarity_score ?? sub.max_similarity ?? null;
 
-  const aiScoreVal = ai ? (ai.score <= 1.0 && ai.score > 0 ? ai.score * 100 : ai.score) : sub.ai_score ?? null;
-  const simScoreVal = simScore != null ? (simScore <= 1.0 && simScore > 0 ? simScore * 100 : simScore) : null;
-  const hwConfidenceVal = hw && hw.confidence > 0 ? (hw.confidence <= 1.0 ? hw.confidence * 100 : hw.confidence) : null;
+  const normPct = (raw: unknown): number | null => {
+    if (raw == null) return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.min(100, Math.max(0, n));
+  };
+
+  const aiScoreVal = ai ? normPct(ai.score) : sub.ai_score != null ? normPct(sub.ai_score) : null;
+  const simScoreVal = simScore != null ? normPct(simScore) : null;
+  const hwConfidenceVal = hw && hw.confidence > 0 ? (hw.confidence <= 1.0 ? hw.confidence * 100 : normPct(hw.confidence)) : null;
 
   const isCompleted = sub.status === "completed" || Boolean(analysis);
   // #region agent log
@@ -214,9 +221,17 @@ export default function SubmissionStatus() {
             <Btn
               variant="secondary"
               size="sm"
-              onClick={() => window.open(`/api/v1/submissions/${sub.id}/file`, "_blank")}
+              onClick={() => window.open(api.submissions.annotatedPdfUrl(sub.id), "_blank")}
+              style={{ background: "rgba(14, 165, 233, 0.12)", color: "#38bdf8", borderColor: "rgba(14, 165, 233, 0.35)" }}
             >
-              Download File
+              📑 Highlighted PDF Report
+            </Btn>
+            <Btn
+              variant="secondary"
+              size="sm"
+              onClick={() => window.open(api.submissions.downloadFileUrl(sub.id), "_blank")}
+            >
+              Raw File
             </Btn>
             <Btn
               variant="primary"

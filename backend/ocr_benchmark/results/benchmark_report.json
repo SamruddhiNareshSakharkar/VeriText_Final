@@ -1,0 +1,45 @@
+{
+  "summary": {
+    "total_samples": 2,
+    "trocr": {
+      "model_id": "microsoft/trocr-base-handwritten",
+      "avg_cer": 161.9167,
+      "avg_wer": 2.25,
+      "exact_match_count": 0,
+      "exact_match_rate": 0.0
+    },
+    "paddleocr": {
+      "model_id": "PaddleOCR-en-local",
+      "avg_cer": 1.0,
+      "avg_wer": 1.0,
+      "exact_match_count": 0,
+      "exact_match_rate": 0.0
+    }
+  },
+  "rows": [
+    {
+      "filename": "line_001.png",
+      "ground_truth": "some .",
+      "trocr_output": "Not logged inTalkContributionsCreate accountLog in",
+      "paddle_output": "",
+      "trocr_cer": 7.8333,
+      "trocr_wer": 2.5,
+      "paddle_cer": 1.0,
+      "paddle_wer": 1.0,
+      "trocr_latency_sec": 51.751,
+      "paddle_latency_sec": 0.334
+    },
+    {
+      "filename": "line_002.png",
+      "ground_truth": "2",
+      "trocr_output": "vteMississippi Republicanswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswives",
+      "paddle_output": "",
+      "trocr_cer": 316.0,
+      "trocr_wer": 2.0,
+      "paddle_cer": 1.0,
+      "paddle_wer": 1.0,
+      "trocr_latency_sec": 368.548,
+      "paddle_latency_sec": 0.261
+    }
+  ]
+}

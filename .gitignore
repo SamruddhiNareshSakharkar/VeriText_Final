@@ -44,3 +44,16 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+
+# ML Model weights & binaries (downloaded via download_trocr_onnx.py)
+backend/app/ml/weights/
+*.onnx
+*.bin
+
+# Debug directories & temporary debug crops
+debug_handwriting/
+debug_handwritten_crops/
+debug_*.png
+test_crop_*.png
+test_*.png
+test_80pct.py

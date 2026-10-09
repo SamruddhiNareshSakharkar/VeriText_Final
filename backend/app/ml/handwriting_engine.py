@@ -94,23 +94,55 @@ class HandwritingEngine:
 
     def compare_handwriting(self, features_a: List[float], features_b: List[float]) -> float:
         """
-        Computes cosine similarity between two 16-dimensional handwriting feature vectors.
+        Computes calibrated forensic stylometric similarity between two 16-dimensional
+        handwriting feature vectors.
+        
+        Uses weighted dimensional distance across key biometric discriminators
+        (slant angle, stroke variance, line spacing rhythm, stroke width distribution,
+        ink distribution) rather than naive unweighted cosine similarity in positive space.
+        
         Returns a percentage score (0.0 to 100.0).
         """
-        if not features_a or not features_b or len(features_a) != len(features_b):
+        if not features_a or not features_b or len(features_a) != len(features_b) or len(features_a) != 16:
             return 0.0
 
         vec_a = np.array(features_a, dtype=np.float32)
         vec_b = np.array(features_b, dtype=np.float32)
 
-        norm_a = np.linalg.norm(vec_a)
-        norm_b = np.linalg.norm(vec_b)
+        # Feature discriminator weights:
+        # [0] Slant Angle: 2.5
+        # [1] Stroke Variance: 2.2
+        # [2] Spacing Rhythm: 1.8
+        # [3] Aspect Ratio: 0.8
+        # [4] Ink Density: 1.0
+        # [5] Vertical Proj Std: 1.0
+        # [6] Stroke Mean: 2.0
+        # [7] Stroke Std: 2.0
+        # [8] Spacing Std: 1.5
+        # [9] Horizontal Var: 1.0
+        # [10] Vertical Var: 1.0
+        # [11] Center X: 0.5
+        # [12] Center Y: 0.5
+        # [13] Top Density: 0.8
+        # [14] Bottom Density: 0.8
+        # [15] Density Diff: 1.0
+        weights = np.array([
+            2.5, 2.2, 1.8, 0.8, 1.0, 1.0, 2.0, 2.0,
+            1.5, 1.0, 1.0, 0.5, 0.5, 0.8, 0.8, 1.0
+        ], dtype=np.float32)
+        weights = weights / np.sum(weights)
 
-        if norm_a == 0 or norm_b == 0:
-            return 0.0
+        # Feature-wise absolute differences
+        diffs = np.abs(vec_a - vec_b)
+        weighted_dist = float(np.sum(weights * diffs))
 
-        cosine = float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
-        score = round(max(0.0, min(100.0, (cosine * 100.0))), 1)
+        # Calibrated exponential kernel:
+        # Distance = 0.00 -> 100%
+        # Distance = 0.05 -> 80%
+        # Distance = 0.15 -> 51%
+        # Distance >= 0.35 -> <= 20%
+        similarity = 100.0 * math.exp(-4.5 * weighted_dist)
+        score = round(max(0.0, min(100.0, similarity)), 1)
         return score
 
     def _process_image_cv(self, path: Path) -> Dict[str, Any]:

@@ -1,0 +1,30 @@
+======================================================================
+VERITEXT LOCAL OCR BENCHMARK REPORT
+======================================================================
+
+Total Evaluated Samples: 2
+
+--- SUMMARY METRICS ---
+1. TrOCR (microsoft/trocr-base-handwritten):
+   • Mean Character Error Rate (CER): 161.9167 (16191.67%)
+   • Mean Word Error Rate (WER):      2.2500 (225.00%)
+   • Exact Match Accuracy:            0/2 (0.00%)
+
+2. PaddleOCR Local Recognition:
+   • Mean Character Error Rate (CER): 1.0000 (100.00%)
+   • Mean Word Error Rate (WER):      1.0000 (100.00%)
+   • Exact Match Accuracy:            0/2 (0.00%)
+
+======================================================================
+DETAILED LINE-BY-LINE EVALUATION
+======================================================================
+
+[File: line_001.png]
+  Ground Truth: 'some .'
+  TrOCR Output: 'Not logged inTalkContributionsCreate accountLog in' (CER=7.833, WER=2.500)
+  Paddle Output:'' (CER=1.000, WER=1.000)
+
+[File: line_002.png]
+  Ground Truth: '2'
+  TrOCR Output: 'vteMississippi Republicanswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswives' (CER=316.000, WER=2.000)
+  Paddle Output:'' (CER=1.000, WER=1.000)

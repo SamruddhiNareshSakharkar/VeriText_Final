@@ -72,38 +72,53 @@ def get_submission_analysis(
             top_matched_name = peer_sub.file_name
 
         raw_segs = top_sim.matching_segments_json or []
+        doc_full_text = ocr.extracted_text if ocr else ""
         for seg in raw_segs:
             if is_a:
+                s_a = seg.get("start_a", 0)
+                e_a = seg.get("end_a", 0)
+                seg_text = doc_full_text[s_a:e_a] if (doc_full_text and 0 <= s_a < e_a <= len(doc_full_text)) else seg.get("text", "")
                 similarity_matches.append(MatchingSegment(
-                    start_a=seg.get("start_a", 0),
-                    end_a=seg.get("end_a", 0),
+                    start_a=s_a,
+                    end_a=e_a,
                     start_b=seg.get("start_b", 0),
                     end_b=seg.get("end_b", 0),
-                    text=seg.get("text", ""),
-                    length=seg.get("length", 0)
+                    text=seg_text,
+                    length=len(seg_text) if seg_text else seg.get("length", 0)
                 ))
             else:
+                s_b = seg.get("start_b", 0)
+                e_b = seg.get("end_b", 0)
+                seg_text = doc_full_text[s_b:e_b] if (doc_full_text and 0 <= s_b < e_b <= len(doc_full_text)) else seg.get("text", "")
                 similarity_matches.append(MatchingSegment(
-                    start_a=seg.get("start_b", 0),
-                    end_a=seg.get("end_b", 0),
+                    start_a=s_b,
+                    end_a=e_b,
                     start_b=seg.get("start_a", 0),
                     end_b=seg.get("end_a", 0),
-                    text=seg.get("text", ""),
-                    length=seg.get("length", 0)
+                    text=seg_text,
+                    length=len(seg_text) if seg_text else seg.get("length", 0)
                 ))
 
     ai_out = None
-    if ai:
-        spans = ai.detected_spans_json or []
-
-        # Live fallback: if no spans stored (e.g. old analysis record) but OCR text exists,
-        # run the updated detector now and persist results for next load
-        if not spans and ocr and ocr.extracted_text and len(ocr.extracted_text.strip()) > 30:
-            try:
-                live = ai_detector.analyze_text(ocr.extracted_text)
-                spans = live.get("detected_spans", [])
-                # Persist improved spans + updated metrics back to DB
-                ai.detected_spans_json = spans
+    if ocr and ocr.extracted_text and len(ocr.extracted_text.strip()) > 30:
+        try:
+            live = ai_detector.analyze_text(ocr.extracted_text)
+            if not ai:
+                ai = AIAnalysis(
+                    submission_id=submission_id,
+                    score=live.get("score", 0.0),
+                    confidence=live.get("confidence", 0.0),
+                    perplexity=live.get("perplexity", 0.0),
+                    burstiness=live.get("burstiness", 0.0),
+                    entropy=live.get("entropy", 0.0),
+                    detected_spans_json=live.get("detected_spans", []),
+                    analysis_metadata_json=live.get("analysis_metadata", {})
+                )
+                db.add(ai)
+                db.commit()
+                db.refresh(ai)
+            else:
+                ai.detected_spans_json = live.get("detected_spans", [])
                 ai.score = live.get("score", ai.score)
                 ai.confidence = live.get("confidence", ai.confidence)
                 ai.perplexity = live.get("perplexity", ai.perplexity)
@@ -111,9 +126,10 @@ def get_submission_analysis(
                 ai.entropy = live.get("entropy", ai.entropy)
                 ai.analysis_metadata_json = live.get("analysis_metadata", ai.analysis_metadata_json or {})
                 db.commit()
-            except Exception:
-                spans = []
+        except Exception:
+            pass
 
+    if ai:
         ai_out = AIAnalysisOut(
             id=ai.id,
             submission_id=ai.submission_id,
@@ -122,7 +138,7 @@ def get_submission_analysis(
             perplexity=ai.perplexity,
             burstiness=ai.burstiness,
             entropy=ai.entropy,
-            detected_spans=spans,
+            detected_spans=ai.detected_spans_json or [],
             analysis_metadata=ai.analysis_metadata_json or {},
             created_at=ai.created_at
         )

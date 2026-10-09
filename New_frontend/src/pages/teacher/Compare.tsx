@@ -24,6 +24,8 @@ interface Highlight {
 }
 
 interface Doc {
+  submissionId?: string;
+  fileName?: string;
   studentLabel: string;
   submittedAt: string;
   wordCount: number;
@@ -141,7 +143,7 @@ function RenderedDocument({ doc, active, onActivate, filter, scrollRef }: Render
           </p>
           <p style={{ fontSize: 11, color: "var(--color-text-4)" }}>{doc.submittedAt}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2.5">
           {doc.wordCount > 0 && (
             <span className="font-mono text-xs text-slate-400">
               {doc.wordCount} words
@@ -150,6 +152,29 @@ function RenderedDocument({ doc, active, onActivate, filter, scrollRef }: Render
           <span className="font-mono text-xs text-slate-500">
             {visHL.length} flags
           </span>
+          {doc.submissionId && (
+            <div className="flex items-center gap-1.5 ml-1">
+              <a
+                href={api.submissions.annotatedPdfUrl(doc.submissionId)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-2xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 hover:bg-cyan-500/20 transition-all shadow-sm"
+                title="Open Turnitin-Style Highlighted PDF Report with AI and similarity annotations"
+              >
+                <span>📑</span>
+                <span>Highlighted PDF</span>
+              </a>
+              <a
+                href={api.submissions.downloadFileUrl(doc.submissionId)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-medium text-slate-400 border border-slate-700 hover:text-slate-200 hover:bg-slate-800/40 transition-all"
+                title="Download original untouched submission file"
+              >
+                <span>Raw</span>
+              </a>
+            </div>
+          )}
         </div>
       </div>
 
@@ -297,6 +322,63 @@ export default function Compare() {
     highlights: [],
   };
 
+function locateSpanOffsets(
+  fullText: string,
+  rawStart?: number | null,
+  rawEnd?: number | null,
+  snippet?: string | null
+): { start: number; end: number } | null {
+  if (!fullText) return null;
+  const len = fullText.length;
+  const text = snippet?.trim() || "";
+
+  // 1. If start and end are already valid bounds
+  if (
+    rawStart != null &&
+    rawEnd != null &&
+    rawStart >= 0 &&
+    rawEnd > rawStart &&
+    rawEnd <= len
+  ) {
+    if (!text) return { start: rawStart, end: rawEnd };
+    const slice = fullText.substring(rawStart, rawEnd).trim();
+    if (slice === text || slice.toLowerCase() === text.toLowerCase() || slice.includes(text) || text.includes(slice)) {
+      return { start: rawStart, end: rawEnd };
+    }
+  }
+
+  // 2. If text is provided, find its exact character range in fullText
+  if (text.length >= 2) {
+    const exactIdx = fullText.indexOf(text);
+    if (exactIdx !== -1) {
+      return { start: exactIdx, end: exactIdx + text.length };
+    }
+
+    const lowerIdx = fullText.toLowerCase().indexOf(text.toLowerCase());
+    if (lowerIdx !== -1) {
+      return { start: lowerIdx, end: lowerIdx + text.length };
+    }
+
+    const prefix = text.slice(0, Math.min(30, text.length));
+    if (prefix.length >= 6) {
+      const prefixIdx = fullText.toLowerCase().indexOf(prefix.toLowerCase());
+      if (prefixIdx !== -1) {
+        return { start: prefixIdx, end: Math.min(len, prefixIdx + text.length) };
+      }
+    }
+  }
+
+  // 3. Fallback to raw bounds if within range
+  if (rawStart != null && rawEnd != null && rawStart >= 0 && rawEnd > rawStart) {
+    return {
+      start: Math.min(len, Math.max(0, rawStart)),
+      end: Math.min(len, Math.max(rawStart + 1, rawEnd)),
+    };
+  }
+
+  return null;
+}
+
   if (compareResult) {
     const textA = compareResult.ocr_text_a || "";
     const textB = compareResult.ocr_text_b || "";
@@ -309,28 +391,35 @@ export default function Compare() {
 
     // Matched text segments
     segs.forEach((seg, idx) => {
-      hlLeft.push({
-        start: seg.start_a,
-        end: seg.end_a,
-        type: "match",
-        pairIdx: idx,
-        note: `Exact matching excerpt with Right document (${seg.length} chars).`,
-      });
-      hlRight.push({
-        start: seg.start_b,
-        end: seg.end_b,
-        type: "match",
-        pairIdx: idx,
-        note: `Exact matching excerpt with Left document (${seg.length} chars).`,
-      });
+      const locA = locateSpanOffsets(textA, seg.start_a, seg.end_a, seg.text);
+      const locB = locateSpanOffsets(textB, seg.start_b, seg.end_b, seg.text);
+      if (locA) {
+        hlLeft.push({
+          start: locA.start,
+          end: locA.end,
+          type: "match",
+          pairIdx: idx,
+          note: `Exact matching excerpt with Right document (${locA.end - locA.start} chars).`,
+        });
+      }
+      if (locB) {
+        hlRight.push({
+          start: locB.start,
+          end: locB.end,
+          type: "match",
+          pairIdx: idx,
+          note: `Exact matching excerpt with Left document (${locB.end - locB.start} chars).`,
+        });
+      }
     });
 
     // AI spans Left
     aiA.forEach((span) => {
-      if (span.start == null || span.end == null || span.start >= span.end) return;
+      const loc = locateSpanOffsets(textA, span.start, span.end, span.text);
+      if (!loc) return;
       hlLeft.push({
-        start: span.start,
-        end: span.end,
+        start: loc.start,
+        end: loc.end,
         type: "ai",
         note: `AI-generated content (${toConfPct(span.confidence)}% confidence): ${span.reason || "Artificial stylometry"}`,
       });
@@ -338,16 +427,19 @@ export default function Compare() {
 
     // AI spans Right
     aiB.forEach((span) => {
-      if (span.start == null || span.end == null || span.start >= span.end) return;
+      const loc = locateSpanOffsets(textB, span.start, span.end, span.text);
+      if (!loc) return;
       hlRight.push({
-        start: span.start,
-        end: span.end,
+        start: loc.start,
+        end: loc.end,
         type: "ai",
         note: `AI-generated content (${toConfPct(span.confidence)}% confidence): ${span.reason || "Artificial stylometry"}`,
       });
     });
 
     docLeft = {
+      submissionId: compareResult.submission_a?.id,
+      fileName: compareResult.submission_a?.file_name,
       studentLabel:
         compareResult.submission_a?.student?.full_name ||
         compareResult.submission_a?.file_name ||
@@ -361,6 +453,8 @@ export default function Compare() {
     };
 
     docRight = {
+      submissionId: compareResult.submission_b?.id,
+      fileName: compareResult.submission_b?.file_name,
       studentLabel:
         compareResult.submission_b?.student?.full_name ||
         compareResult.submission_b?.file_name ||
@@ -592,7 +686,7 @@ export default function Compare() {
           </div>
 
           <div>
-            {(hwScore && hwScore >= 70) || (simScore && simScore >= 60) ? (
+            {(hwScore && hwScore >= 75) || (simScore && simScore >= 60) ? (
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/40">
                 ⚠️ Academic Integrity Alert: Suspicious Author Similarity
               </span>

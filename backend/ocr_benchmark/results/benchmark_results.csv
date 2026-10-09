@@ -1,0 +1,3 @@
+filename,ground_truth,trocr_output,paddle_output,trocr_cer,trocr_wer,paddle_cer,paddle_wer,trocr_latency_sec,paddle_latency_sec
+line_001.png,some .,Not logged inTalkContributionsCreate accountLog in,,7.8333,2.5,1.0,1.0,51.751,0.334
+line_002.png,2,vteMississippi Republicanswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswiveswives,,316.0,2.0,1.0,1.0,368.548,0.261

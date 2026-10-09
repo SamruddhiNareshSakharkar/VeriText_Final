@@ -307,3 +307,49 @@ def download_submission_file(
         filename=submission.file_name,
         media_type=submission.mime_type or "application/octet-stream"
     )
+
+@router.get("/submissions/{submission_id}/annotated-pdf")
+def get_annotated_submission_pdf(
+    submission_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns the Turnitin-style annotated PDF containing the Cover Page
+    and 1:1 cyan/orange highlight annotations directly on the submitted document pages.
+    """
+    from fastapi.responses import Response
+    from backend.app.services.pdf_annotation_service import pdf_annotation_service
+
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not submission:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Submission not found")
+
+    is_owner = submission.student_id == current_user.id
+    is_teacher = current_user.role in ["teacher", "admin"]
+    if not is_owner and not is_teacher:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    pdf_bytes = pdf_annotation_service.generate_annotated_pdf(submission_id, db)
+    if not pdf_bytes:
+        # Fallback to raw file if annotation failed
+        abs_path = storage_service.get_absolute_path(submission.file_path)
+        if abs_path.exists():
+            return FileResponse(
+                path=str(abs_path),
+                filename=submission.file_name,
+                media_type=submission.mime_type or "application/pdf"
+            )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Annotated PDF could not be generated")
+
+    safe_title = (submission.file_name or "submission").rsplit(".", 1)[0]
+    out_filename = f"VeriText_Integrity_Report_{safe_title}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{out_filename}"',
+            "Cache-Control": "public, max-age=3600"
+        }
+    )

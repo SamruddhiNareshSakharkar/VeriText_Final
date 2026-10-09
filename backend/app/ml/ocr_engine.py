@@ -1,35 +1,38 @@
 """
 VERITEXT OCR Pipeline
 =====================
-High-efficiency, multi-stage OCR architecture for academic plagiarism detection.
+High-efficiency, multi-stage OCR architecture for academic plagiarism detection and evaluation.
 
-Pipeline Architecture:
-----------------------
+Core Architectural Principles:
+------------------------------
 1. Document Ingestion: PDF (PyMuPDF with digital text bypass), DOCX, Images, Plaintext.
-2. Fast Blank Page & Document Type Classification (digital_pdf, scanned_printed, handwritten, mixed).
+2. Blank Page & Document Type Classification (digital_pdf, scanned_printed, handwritten, mixed).
 3. Specialized Routing:
    - Digital PDF -> Direct PyMuPDF text stream extraction (<5ms, zero hallucination).
    - Scanned / Printed -> PaddleOCR primary (or WinOCR / Tesseract fallback).
-   - Handwritten -> PaddleOCR / Morphological Line Detection (with ascender/descender safety padding)
-                    + TrOCR (microsoft/trocr-base-handwritten) recognition.
-4. OCR Quality Gate:
-   - Line-by-line character validity & confidence scoring.
-   - Low confidence -> Automatic Second-Pass with adaptive alternate preprocessing.
-   - Consistency comparison between passes.
-   - Uncertain lines flagged for human teacher review (needs_review = True) instead of guessing.
+   - Handwritten -> Ascender/Descender-safe Line Segmentation + local TrOCR (microsoft/trocr-base-handwritten).
+4. 100% Local / Offline: No external cloud OCR APIs (Google Cloud Vision, Azure, AWS, OpenAI, Gemini).
+5. Strict Raw OCR Preservation: Zero spelling, grammar, dictionary, or LLM mutation on raw_text and authoritative text.
+6. Multi-Factor Candidate Selection with 3rd Hypothesis Arbitration: Combines model recognition score, normalized
+   token length, cross-pass agreement, and anomaly metrics. Disagreements are preserved in candidate_details.
+7. Complete Spatial Line Matching & Unmatched Pass-2 Line Preservation: Unmatched Pass-2 lines are retained in the
+   final output with their actual bounding boxes and flagged for review.
+8. Non-Destructive Ruled-Line Handling: Optional per-crop ruled line removal with stroke preservation fallbacks.
+9. Source Traceability & Granular Diagnostics: Every line maintains exact page/bbox/crop/candidate traceability.
 """
 
 import os
 import io
 import sys
 import math
+import json
 import shutil
 import logging
 import asyncio
 import concurrent.futures
 from pathlib import Path
-from dataclasses import dataclass, asdict
-from typing import Dict, Any, List, Tuple, Optional
+from dataclasses import dataclass, asdict, field
+from typing import Dict, Any, List, Tuple, Optional, Set
 import docx
 import numpy as np
 import re
@@ -42,18 +45,6 @@ os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
 os.environ["DISABLE_MODEL_SOURCE_CHECK"] = "True"
 os.environ["FLAGS_allocator_strategy"] = "auto_growth"
 os.environ["OMP_NUM_THREADS"] = "4"
-
-# CRITICAL: Pre-import torch BEFORE paddleocr to prevent DLL conflict on Windows.
-# PaddlePaddle and PyTorch share some DLL dependencies, and if PaddlePaddle loads
-# first, it corrupts the DLL search path causing torch's shm.dll to fail.
-try:
-    import torch
-except ImportError:
-    pass
-
-# Timeout for TrOCR model loading/inference (seconds)
-_TROCR_LOAD_TIMEOUT = 30
-_TROCR_INFER_TIMEOUT = 45
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +61,7 @@ TESSERACT_CANDIDATE_PATHS = [
 _tesseract_cache = {"checked": False, "module": None}
 _paddle_cache = {"checked": False, "instance": None, "detector": None, "retry_count": 0}
 _PADDLE_MAX_RETRIES = 3
+DEBUG_HANDWRITING_OCR = os.getenv("DEBUG_HANDWRITING_OCR", "true").lower() in ("true", "1", "yes")
 
 def _get_configured_tesseract():
     if _tesseract_cache["checked"]:
@@ -97,65 +89,97 @@ def _get_configured_tesseract():
         return None
 
 def _get_paddle_ocr():
-    """Dynamically loads PaddleOCR with highest priority for printed and handwritten text recognition.
-    Retries up to _PADDLE_MAX_RETRIES times if initialization fails (e.g., network issues)."""
+    """Dynamically loads PaddleOCR for printed text recognition."""
     if _paddle_cache["instance"] is not None:
         return _paddle_cache["instance"]
     if _paddle_cache["checked"] and _paddle_cache["retry_count"] >= _PADDLE_MAX_RETRIES:
-        logger.debug(f"PaddleOCR permanently failed after {_PADDLE_MAX_RETRIES} retries.")
         return None
     _paddle_cache["checked"] = True
     try:
         from paddleocr import PaddleOCR
-        logger.info("PaddleOCR module imported successfully. Attempting initialization...")
         instance = None
-        # 1. Try modern PaddleOCR 3.x parameter
         try:
             instance = PaddleOCR(use_textline_orientation=True, lang="en")
-            logger.info("PaddleOCR 3.x initialized with use_textline_orientation")
-        except Exception as e3:
-            logger.warning(f"PaddleOCR 3.x init failed: {type(e3).__name__}: {e3}")
-        # 2. Try classic PaddleOCR 2.x parameter
+        except Exception:
+            pass
         if instance is None:
             try:
                 instance = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
-                logger.info("PaddleOCR 2.x initialized with use_angle_cls")
-            except Exception as e2:
-                logger.warning(f"PaddleOCR 2.x (no log) init failed: {type(e2).__name__}: {e2}")
-        if instance is None:
-            try:
-                instance = PaddleOCR(use_angle_cls=True, lang="en")
-                logger.info("PaddleOCR 2.x initialized (with log)")
-            except Exception as e2b:
-                logger.warning(f"PaddleOCR 2.x (with log) init failed: {type(e2b).__name__}: {e2b}")
-        # 3. Base language configuration
+            except Exception:
+                pass
         if instance is None:
             try:
                 instance = PaddleOCR(lang="en")
-                logger.info("PaddleOCR base initialized")
-            except Exception as e_base:
-                logger.warning(f"PaddleOCR base init failed: {type(e_base).__name__}: {e_base}")
+            except Exception:
+                pass
 
         if instance is not None:
             _paddle_cache["instance"] = instance
             _paddle_cache["retry_count"] = 0
-            logger.info("PaddleOCR engine loaded successfully as TOP-PRIORITY OCR engine.")
+            logger.info("PaddleOCR engine loaded for printed text processing.")
             return instance
         else:
             _paddle_cache["retry_count"] = _paddle_cache.get("retry_count", 0) + 1
-            logger.error(f"PaddleOCR: ALL init methods failed. Attempt {_paddle_cache['retry_count']}/{_PADDLE_MAX_RETRIES}.")
             return None
-    except ImportError as ie:
-        _paddle_cache["retry_count"] = _PADDLE_MAX_RETRIES  # Don't retry if module not installed
-        logger.error(f"PaddleOCR module not installed: {ie}")
-        return None
     except Exception as e:
         _paddle_cache["retry_count"] = _paddle_cache.get("retry_count", 0) + 1
-        logger.error(f"PaddleOCR initialization attempt {_paddle_cache['retry_count']}/{_PADDLE_MAX_RETRIES} failed: {type(e).__name__}: {e}")
-        import traceback
-        logger.debug(traceback.format_exc())
-        _paddle_cache["instance"] = None
+        logger.debug(f"PaddleOCR init fallback: {e}")
         return None
+
+
+# =====================================================================
+# DATA STRUCTURES
+# =====================================================================
+
+@dataclass
+class LineRegion:
+    image: Image.Image
+    bbox: Tuple[int, int, int, int]  # x1, y1, x2, y2
+    center_y: int
+    line_number: int
+    is_handwritten: bool = True
+    original_crop: Optional[Image.Image] = None
+    line_removed_crop: Optional[Image.Image] = None
+
+
+@dataclass
+class RecognizedLine:
+    line_number: int
+    page_number: int                       # Source page index for traceability
+    raw_text: str                          # Verbatim recognition output (untouched)
+    text: str                              # Authoritative text preserving case, punctuation, math, code
+    normalized_text: str                   # Downstream helper for similarity/indexing
+    recognition_score: float               # Model-derived recognition score (normalized beam likelihood)
+    variant_agreement: float               # Token/character agreement across preprocessing passes (0.0 to 1.0)
+    uncertainty_score: float               # Composite uncertainty indicator (0.0 to 1.0)
+    confidence: float                      # Legacy backward-compatible float: round(1.0 - uncertainty_score, 3)
+    bbox: Tuple[int, int, int, int]        # x1, y1, x2, y2
+    center_y: int
+    doc_type: str
+    ocr_engine: str
+    flagged_for_review: bool
+    uncertain_words: List[str] = field(default_factory=list)
+    candidate_details: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class SegmentationDiagnostics:
+    detected_lines_count: int = 0
+    merged_lines_count: int = 0
+    split_lines_count: int = 0
+    unmatched_lines_count: int = 0
+    avg_line_height: float = 0.0
+    suspicious_tiny_crops: int = 0
+    suspicious_huge_crops: int = 0
+    segmentation_warning: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+# =====================================================================
+# STEP 1: IMAGE QUALITY & BLANK PAGE DETECTION
+# =====================================================================
 
 def _is_blank_page(pil_image: Image.Image) -> bool:
     """Fast blank-page detection in <1ms using a 32x32 thumbnail sample."""
@@ -173,45 +197,28 @@ def _is_blank_page(pil_image: Image.Image) -> bool:
         return False
 
 def _image_needs_heavy_preprocessing(pil_image: Image.Image) -> bool:
-    """
-    Determines if an image needs heavy preprocessing (background subtraction,
-    illumination normalization) or if it's already clean enough for direct OCR.
-    Clean scans with uniform white backgrounds skip expensive processing.
-    """
+    """Determines if an image needs background normalization or is already clean."""
     try:
         thumb = pil_image.resize((128, 128), Image.Resampling.NEAREST).convert("L")
         arr = np.array(thumb, dtype=np.float32)
-        # Check background uniformity: if most of the image is bright and uniform, it's clean
         bg_mask = arr > 200
         bg_ratio = float(np.sum(bg_mask)) / arr.size
         if bg_ratio > 0.55:
-            # Background occupies >55% and is uniform — clean scan
             bg_std = float(np.std(arr[bg_mask])) if np.any(bg_mask) else 999.0
             if bg_std < 18.0:
-                return False  # Skip heavy preprocessing
+                return False
         return True
     except Exception:
         return True
-
-# =====================================================================
-# STEP 1: DOCUMENT TYPE CLASSIFICATION
-# =====================================================================
 
 def classify_document_type(
     pil_image: Optional[Image.Image] = None,
     digital_text: str = ""
 ) -> str:
-    """
-    Classifies the document/page type:
-    - 'digital_pdf': Digital PDF with selectable, high-density computer-generated text.
-    - 'scanned_printed': Scanned or photographed printed document with uniform typefaces.
-    - 'handwritten': Handwritten student submission, notes, or essays.
-    - 'mixed': Mixed document with printed questions/templates and handwritten responses.
-    """
+    """Classifies the document/page type into digital_pdf, scanned_printed, handwritten, or mixed."""
     if digital_text:
         words = digital_text.strip().split()
         if len(words) >= 5:
-            # Check ratio of standard alphanumeric chars
             alpha_ratio = sum(c.isalnum() or c.isspace() for c in digital_text) / max(len(digital_text), 1)
             if alpha_ratio > 0.80:
                 return "digital_pdf"
@@ -220,12 +227,10 @@ def classify_document_type(
         return "scanned_printed"
 
     try:
-        # Analyze stroke variance & geometry on a downsampled 500x500 grayscale image
         thumb = pil_image.copy()
         thumb.thumbnail((500, 500))
         gray = np.array(thumb.convert("L"), dtype=np.float32)
 
-        # Background estimation to isolate ink
         bg = ndimage.gaussian_filter(gray, sigma=6)
         norm = np.clip((gray / (bg + 1e-5)) * 255.0, 0, 255)
         binary = (norm < 195).astype(np.uint8)
@@ -234,13 +239,6 @@ def classify_document_type(
         if total_ink < 80:
             return "scanned_printed"
 
-        # Horizontal projection profiles
-        row_proj = np.sum(binary, axis=1)
-        active_rows = row_proj[row_proj > 0]
-        if len(active_rows) == 0:
-            return "scanned_printed"
-
-        # Line height variance & spacing irregularity
         labeled, num_features = ndimage.label(binary)
         if num_features > 10:
             slices = ndimage.find_objects(labeled)
@@ -263,15 +261,13 @@ def classify_document_type(
         logger.debug(f"Document type classification fallback: {e}")
         return "scanned_printed"
 
+
 # =====================================================================
-# STEP 2: ADAPTIVE PREPROCESSING
+# STEP 2: PREPROCESSING (NON-DESTRUCTIVE & CONSERVATIVE)
 # =====================================================================
 
 def _correct_skew(pil_image: Image.Image, max_angle: float = 12.0) -> Image.Image:
-    """
-    Fast sub-degree skew correction using horizontal projection profile variance.
-    Downsampled to 300x300 for sub-10ms sweep.
-    """
+    """Fast sub-degree skew correction using horizontal projection profile variance."""
     try:
         thumb = pil_image.copy()
         thumb.thumbnail((300, 300))
@@ -305,7 +301,6 @@ def _correct_skew(pil_image: Image.Image, max_angle: float = 12.0) -> Image.Imag
                 best_angle = angle
 
         if abs(best_angle) >= 0.5:
-            logger.info(f"Deskewing image by {best_angle:.2f} degrees")
             return pil_image.rotate(-best_angle, resample=Image.Resampling.BICUBIC, expand=True, fillcolor=(255, 255, 255))
         return pil_image
     except Exception as e:
@@ -313,14 +308,7 @@ def _correct_skew(pil_image: Image.Image, max_angle: float = 12.0) -> Image.Imag
         return pil_image
 
 def _preprocess_printed_image(pil_image: Image.Image) -> Image.Image:
-    """
-    Preprocessing tailored specifically for printed text:
-    - Orientation fix
-    - Alpha flattening
-    - Deskewing
-    - Adaptive: skip heavy background subtraction for already-clean scans
-    - Gentle contrast & stroke sharpening
-    """
+    """Preprocessing tailored for printed text."""
     try:
         try:
             pil_image = ImageOps.exif_transpose(pil_image)
@@ -345,10 +333,7 @@ def _preprocess_printed_image(pil_image: Image.Image) -> Image.Image:
             scale = 2200.0 / float(max_side)
             pil_image = pil_image.resize((int(w * scale), int(h * scale)), Image.Resampling.BICUBIC)
 
-        needs_heavy = _image_needs_heavy_preprocessing(pil_image)
-
-        if needs_heavy:
-            # Full background subtraction for uneven lighting / camera captures
+        if _image_needs_heavy_preprocessing(pil_image):
             gray = pil_image.convert("L")
             w_cur, h_cur = gray.size
             small_w, small_h = max(1, w_cur // 4), max(1, h_cur // 4)
@@ -369,7 +354,6 @@ def _preprocess_printed_image(pil_image: Image.Image) -> Image.Image:
             sharpened = boosted.filter(ImageFilter.UnsharpMask(radius=1.0, percent=40, threshold=2))
             return sharpened.convert("RGB")
         else:
-            # Light preprocessing for clean scans: just autocontrast + light sharpen
             enhanced = ImageOps.autocontrast(pil_image, cutoff=0.3)
             sharpened = enhanced.filter(ImageFilter.UnsharpMask(radius=0.8, percent=30, threshold=2))
             return sharpened
@@ -379,13 +363,11 @@ def _preprocess_printed_image(pil_image: Image.Image) -> Image.Image:
 
 def _preprocess_handwritten_image(pil_image: Image.Image, variant: str = "gentle") -> Image.Image:
     """
-    CRITICAL: Preserves original grayscale/RGB ink values without aggressive thresholding.
-    Aggressive binarization destroys handwriting loops, ascenders, and delicate ink strokes.
-
+    Preserves original ink subtleties without aggressive binarization.
     Variants:
-    - 'gentle': EXIF fix, mild deskew, gentle contrast normalization, slight unsharp mask.
-    - 'illumination': Bilinear background subtraction for camera shadows while preserving thin strokes.
-    - 'high_contrast': For faint pencil or light blue ink submissions.
+    - 'gentle': EXIF orientation fix, gentle skew correction, histogram normalization.
+    - 'illumination': Bilinear background subtraction for shadow removal.
+    - 'high_contrast': Autocontrast boost for faint ink or pencil.
     """
     try:
         try:
@@ -412,14 +394,12 @@ def _preprocess_handwritten_image(pil_image: Image.Image, variant: str = "gentle
             pil_image = pil_image.resize((int(w * scale), int(h * scale)), Image.Resampling.BICUBIC)
 
         if variant == "gentle":
-            # Retain RGB colors; normalize histogram gently
             enhanced = ImageOps.autocontrast(pil_image, cutoff=0.5)
             enhancer = ImageEnhance.Contrast(enhanced)
             boosted = enhancer.enhance(1.15)
             return boosted.filter(ImageFilter.UnsharpMask(radius=0.8, percent=30, threshold=2))
 
         elif variant == "illumination":
-            # Remove uneven lighting/phone shadows without binarizing
             gray = pil_image.convert("L")
             w_cur, h_cur = gray.size
             small_w, small_h = max(1, w_cur // 4), max(1, h_cur // 4)
@@ -437,7 +417,6 @@ def _preprocess_handwritten_image(pil_image: Image.Image, variant: str = "gentle
             return enhanced.convert("RGB")
 
         elif variant == "high_contrast":
-            # For faint pencil or light blue ink
             gray = pil_image.convert("L")
             enhanced = ImageOps.autocontrast(gray, cutoff=1.5)
             enhancer = ImageEnhance.Contrast(enhanced)
@@ -450,35 +429,66 @@ def _preprocess_handwritten_image(pil_image: Image.Image, variant: str = "gentle
         logger.warning(f"Handwritten preprocessing fallback: {e}")
         return pil_image.convert("RGB") if pil_image.mode != "RGB" else pil_image
 
-# =====================================================================
-# STEP 3: LINE SEGMENTATION WITH AMPLE PADDING
-# =====================================================================
+def _detect_and_remove_ruled_lines(line_crop: Image.Image) -> Tuple[Image.Image, bool]:
+    """
+    Conservatively detects and removes ruled notebook lines on a single line crop.
+    Protects vertical and diagonal handwriting strokes intersecting the line.
+    Returns (processed_image, lines_were_detected_and_removed).
+    """
+    try:
+        w, h = line_crop.size
+        if w < 60 or h < 15:
+            return line_crop, False
 
-@dataclass
-class LineRegion:
-    image: Image.Image
-    bbox: Tuple[int, int, int, int]  # x1, y1, x2, y2
-    line_number: int
-    is_handwritten: bool = True
+        gray = np.array(line_crop.convert("L"), dtype=np.uint8)
+        thresh = float(np.mean(gray)) - 0.35 * float(np.std(gray))
+        binary = (gray < thresh).astype(np.uint8)
+
+        min_line_len = max(30, int(w * 0.55))
+        h_kernel = np.ones((1, min_line_len), dtype=np.uint8)
+        eroded = ndimage.binary_erosion(binary, structure=h_kernel)
+        detected_lines = ndimage.binary_dilation(eroded, structure=h_kernel)
+
+        if not np.any(detected_lines):
+            return line_crop, False
+
+        v_kernel = np.ones((max(4, int(h * 0.35)), 1), dtype=np.uint8)
+        vertical_strokes = ndimage.binary_opening(binary, structure=v_kernel)
+
+        mask_to_remove = detected_lines & (~vertical_strokes)
+
+        clean_arr = gray.copy()
+        bg_val = int(np.percentile(gray, 85))
+        clean_arr[mask_to_remove] = bg_val
+
+        initial_ink = np.sum(binary)
+        remaining_ink = np.sum(clean_arr < thresh)
+        if initial_ink > 0 and (initial_ink - remaining_ink) / float(initial_ink) > 0.35:
+            return line_crop, False
+
+        return Image.fromarray(clean_arr).convert("RGB"), True
+    except Exception as e:
+        logger.debug(f"Ruled-line removal check fallback: {e}")
+        return line_crop, False
+
+
+# =====================================================================
+# STEP 3: ASCENDER/DESCENDER-SAFE LINE SEGMENTATION & DIAGNOSTICS
+# =====================================================================
 
 def segment_text_lines(
     pil_image: Image.Image,
     min_line_height: int = 20,
-    vertical_pad_ratio: float = 0.28,
-    min_vertical_pad: int = 16
-) -> List[LineRegion]:
+    vertical_pad_ratio: float = 0.30,
+    min_vertical_pad: int = 18
+) -> Tuple[List[LineRegion], SegmentationDiagnostics]:
     """
-    Segments handwritten or mixed pages into individual text lines.
-    
-    CRITICAL DESIGN:
-    Provides generous vertical padding (28% of height, min 16px) around each detected line strip.
-    This guarantees that upper ascenders ('b', 'd', 'h', 'k', 'l', 't', capital letters)
-    and lower descenders ('g', 'j', 'p', 'q', 'y', 'f') are NEVER clipped or mutilated.
-    Optimized with fast multi-scale processing for sub-100ms execution.
+    Segments handwritten pages into individual text line crops with ascender/descender protection.
+    Returns: (list of LineRegion objects, SegmentationDiagnostics metadata).
     """
+    diag = SegmentationDiagnostics()
     try:
         w, h = pil_image.size
-        # Multi-scale downsampling for ultra-fast morphology (<100ms on large scans)
         scale = min(1.0, 700.0 / max(w, h))
         sw, sh = max(1, int(w * scale)), max(1, int(h * scale))
 
@@ -488,25 +498,24 @@ def segment_text_lines(
         else:
             arr = np.array(pil_image.convert("L"), dtype=np.uint8)
 
-        # 1. Morphological horizontal line smearing on scaled image
         mean_val = float(np.mean(arr))
         std_val = float(np.std(arr))
         thresh = max(40, mean_val - 0.40 * std_val)
         ink = (arr < thresh)
 
-        # Dilate horizontally to join words into lines
+        # Horizontal smearing to connect words on each handwritten line
         h_kernel_w = max(8, int(sw * 0.045))
         h_struct = np.ones((3, h_kernel_w), dtype=bool)
         smeared = ndimage.binary_dilation(ink, structure=h_struct)
 
-        # Close slight vertical gaps within the line
+        # Close slight vertical intra-line gaps
         v_struct = np.ones((5, 3), dtype=bool)
         smeared = ndimage.binary_closing(smeared, structure=v_struct)
 
         labeled, _ = ndimage.label(smeared)
         slices = ndimage.find_objects(labeled)
 
-        boxes: List[Tuple[int, int, int, int]] = []
+        raw_boxes: List[Tuple[int, int, int, int]] = []
         inv_scale = 1.0 / scale
         s_min_lh = max(4, int(min_line_height * scale))
 
@@ -518,36 +527,34 @@ def segment_text_lines(
             sbw = sx2 - sx1
             sbh = sy2 - sy1
 
-            if sbw >= int(50 * scale) and sbh >= s_min_lh and sbh <= int(sh * 0.45):
-                # Map back to full-resolution coordinates
+            if sbw >= int(45 * scale) and sbh >= s_min_lh and sbh <= int(sh * 0.45):
                 y1 = int(sy1 * inv_scale)
                 y2 = min(h, int(sy2 * inv_scale))
                 x1 = int(sx1 * inv_scale)
                 x2 = min(w, int(sx2 * inv_scale))
                 bh = y2 - y1
 
-                # Generous padding to protect ascenders and descenders
                 pad_y = max(min_vertical_pad, int(bh * vertical_pad_ratio))
                 ny1 = max(0, y1 - pad_y)
                 ny2 = min(h, y2 + pad_y)
                 nx1 = max(0, x1 - 25)
                 nx2 = min(w, x2 + 25)
-                boxes.append((nx1, ny1, nx2, ny2))
+                raw_boxes.append((nx1, ny1, nx2, ny2))
 
-        # Sort top-to-bottom then left-to-right
-        boxes.sort(key=lambda b: (b[1], b[0]))
+        # Sort top-to-bottom
+        raw_boxes.sort(key=lambda b: (b[1], b[0]))
 
-        # Merge overlapping line boxes (e.g. broken multi-segment lines on the same baseline)
+        # Merge overlapping line segments on the same horizontal baseline
         merged_boxes: List[Tuple[int, int, int, int]] = []
-        for b in boxes:
+        for b in raw_boxes:
             if not merged_boxes:
                 merged_boxes.append(b)
                 continue
             prev = merged_boxes[-1]
             overlap_y = min(prev[3], b[3]) - max(prev[1], b[1])
             min_h = min(prev[3] - prev[1], b[3] - b[1])
-            if overlap_y > 0.55 * min_h and abs(b[1] - prev[1]) < 35:
-                # Merge into single encompassing bounding box
+            if overlap_y > 0.50 * min_h and abs(b[1] - prev[1]) < 35:
+                diag.merged_lines_count += 1
                 merged_boxes[-1] = (
                     min(prev[0], b[0]),
                     min(prev[1], b[1]),
@@ -557,7 +564,7 @@ def segment_text_lines(
             else:
                 merged_boxes.append(b)
 
-        # Fallback to horizontal projection profile if morphological smearing returned 0 lines
+        # Fallback to projection profile if morphology found no lines
         if not merged_boxes:
             proj = np.sum(ink.astype(np.float32), axis=1)
             kernel_size = max(5, int(sh * 0.012))
@@ -588,49 +595,52 @@ def segment_text_lines(
                 pad_y = max(min_vertical_pad, int(bh * vertical_pad_ratio))
                 merged_boxes.append((0, max(0, y1 - pad_y), w, min(h, y2 + pad_y)))
 
+        # Create LineRegion objects and compute diagnostics
         regions: List[LineRegion] = []
+        heights = []
         for idx, (x1, y1, x2, y2) in enumerate(merged_boxes, start=1):
-            crop_img = pil_image.crop((x1, y1, x2, y2))
+            crop_orig = pil_image.crop((x1, y1, x2, y2))
+            line_h = y2 - y1
+            heights.append(line_h)
+
+            if line_h < 18:
+                diag.suspicious_tiny_crops += 1
+            elif line_h > int(h * 0.35):
+                diag.suspicious_huge_crops += 1
+
+            crop_ruled, had_ruled = _detect_and_remove_ruled_lines(crop_orig)
+
             regions.append(LineRegion(
-                image=crop_img,
+                image=crop_orig,
                 bbox=(x1, y1, x2, y2),
+                center_y=int((y1 + y2) / 2),
                 line_number=idx,
-                is_handwritten=True
+                is_handwritten=True,
+                original_crop=crop_orig,
+                line_removed_crop=crop_ruled if had_ruled else None
             ))
 
-        logger.info(f"Segmented {len(regions)} padded text lines from image ({w}x{h})")
-        if not regions:
-            regions.append(LineRegion(
-                image=pil_image,
-                bbox=(0, 0, w, h),
-                line_number=1,
-                is_handwritten=True
-            ))
-        return regions
+        diag.detected_lines_count = len(regions)
+        diag.avg_line_height = round(float(np.mean(heights)), 1) if heights else 0.0
+        diag.segmentation_warning = (diag.suspicious_huge_crops > 0) or (diag.detected_lines_count == 0)
+
+        return regions, diag
     except Exception as e:
-        logger.warning(f"Line segmentation fallback: {e}")
-        return [LineRegion(image=pil_image, bbox=(0, 0, pil_image.size[0], pil_image.size[1]), line_number=1, is_handwritten=True)]
+        logger.warning(f"Line segmentation error: {e}")
+        diag.segmentation_warning = True
+        return [], diag
+
 
 # =====================================================================
-# STEP 4: RECOGNITION ENGINES
+# STEP 4: LOCAL PRIMARY HANDWRITING ENGINE (TrOCR)
 # =====================================================================
-
-@dataclass
-class RecognizedLine:
-    line_number: int
-    text: str
-    confidence: float
-    bbox: Tuple[int, int, int, int]
-    doc_type: str
-    ocr_engine: str
-    flagged_for_review: bool
-    uncertain_words: List[str]
 
 class TrOCREngine:
     """
-    TrOCR Vision-Encoder-Decoder Engine for single-line handwritten recognition.
-    Default Model: microsoft/trocr-base-handwritten (with fallback to small).
-    Features batched generation for high inference throughput.
+    Local Vision-Encoder-Decoder Engine for single-line handwriting recognition.
+    Default Model: microsoft/trocr-base-handwritten.
+    Inference: Deterministic beam search (do_sample=False, num_beams=4).
+    Zero cloud calls — 100% offline inference.
     """
     def __init__(self, model_path: Optional[str] = None):
         self.processor = None
@@ -644,9 +654,8 @@ class TrOCREngine:
         self.custom_weights_path = Path(__file__).resolve().parent / "weights" / "trocr"
 
     def _load_model_internal(self):
-        """Loads TrOCR model using fast RoBERTa tokenizer for high-accuracy handwriting recognition."""
         import torch
-        from transformers import AutoImageProcessor, AutoTokenizer, TrOCRProcessor, VisionEncoderDecoderModel
+        from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         target_path = self.default_model_id
@@ -656,29 +665,28 @@ class TrOCREngine:
         elif (self.custom_weights_path / "model.safetensors").exists() or (self.custom_weights_path / "pytorch_model.bin").exists():
             target_path = str(self.custom_weights_path)
 
-        logger.info(f"Loading TrOCR Handwriting model from '{target_path}' on {self.device}")
+        logger.info(f"Loading local TrOCR Handwriting model from '{target_path}' on {self.device}")
         try:
             self.processor = TrOCRProcessor.from_pretrained(target_path)
             self.model = VisionEncoderDecoderModel.from_pretrained(target_path)
         except Exception as ex_base:
-            logger.warning(f"Failed to load {target_path} ({ex_base}), trying fallback {self.fallback_model_id}")
+            logger.warning(f"Failed loading {target_path} ({ex_base}), trying fallback {self.fallback_model_id}")
             self.processor = TrOCRProcessor.from_pretrained(self.fallback_model_id)
             self.model = VisionEncoderDecoderModel.from_pretrained(self.fallback_model_id)
 
         self.model.to(self.device)
         self.model.eval()
         self.is_loaded = True
-        logger.info("TrOCR Handwriting Engine successfully loaded and operational.")
+        logger.info("Local TrOCR Handwriting Engine initialized successfully.")
 
     def load_model(self):
-        """Loads TrOCR model with fast timeout protection — never blocks pipeline."""
         if self.is_loaded or self.load_failed:
             return
         try:
             self._load_model_internal()
         except Exception as e:
             self.load_failed = True
-            logger.info(f"TrOCR initialization fallback ({e}) — using fast WinOCR/Tesseract engine.")
+            logger.info(f"TrOCR initialization fallback ({e}).")
 
     def recognize_lines_batch(
         self,
@@ -686,8 +694,9 @@ class TrOCREngine:
         batch_size: int = 4
     ) -> List[Tuple[str, float]]:
         """
-        Recognizes multiple line strips using batched model generation.
-        Significantly faster than one-by-one sequential inference.
+        Recognizes multiple line strips using batched deterministic beam search.
+        Returns: List of (raw_recognized_text, recognition_score).
+        recognition_score is the model-derived length-normalized sequence score (0.0 to 1.0).
         """
         if not self.is_loaded:
             self.load_model()
@@ -710,14 +719,13 @@ class TrOCREngine:
                         pixel_values,
                         return_dict_in_generate=True,
                         output_scores=True,
-                        decoder_start_token_id=2,
-                        eos_token_id=2,
-                        pad_token_id=1,
-                        max_new_tokens=64,
-                        num_beams=2,
+                        do_sample=False,
+                        num_beams=4,
+                        length_penalty=1.0,
                         early_stopping=True,
-                        no_repeat_ngram_size=3,
-                        repetition_penalty=1.25,
+                        max_new_tokens=64,
+                        no_repeat_ngram_size=4,
+                        repetition_penalty=1.20,
                     )
 
                 sequences = output.sequences
@@ -726,263 +734,409 @@ class TrOCREngine:
 
                 for b_idx, text in enumerate(decoded):
                     clean_line = text.strip()
-                    # Repetition loop filter
-                    if re.search(r"(\b\w\b\s+){4,}", clean_line) or re.search(r"(\W+\w\W+){4,}", clean_line):
+
+                    # Filter out pathological looping tokens (e.g. "a a a a a a")
+                    if re.search(r"(\b\w\b\s+){5,}", clean_line) or re.search(r"(\W+\w\W+){5,}", clean_line):
                         results.append(("", 0.0))
                         continue
 
-                    conf = 0.82
+                    # Compute model recognition score from length-normalized beam log-likelihood
+                    rec_score = 0.80
                     if beam_scores is not None and len(beam_scores) > b_idx:
                         raw_score = float(beam_scores[b_idx].item())
                         tok_len = max(len(sequences[b_idx]), 1)
                         norm_score = raw_score / tok_len
-                        conf = float(np.clip(math.exp(norm_score * 0.8), 0.25, 0.99))
+                        rec_score = float(np.clip(math.exp(norm_score * 0.75), 0.20, 0.98))
 
-                    results.append((clean_line, conf))
+                    results.append((clean_line, round(rec_score, 3)))
 
             return results
         except Exception as e:
-            logger.debug(f"TrOCR batched recognition error: {e}")
+            logger.debug(f"TrOCR recognition error: {e}")
             return [("", 0.0) for _ in line_imgs]
-
-    def recognize_line_with_confidence(self, line_img: Image.Image) -> Tuple[str, float]:
-        res = self.recognize_lines_batch([line_img], batch_size=1)
-        return res[0] if res else ("", 0.0)
 
 _trocr_engine = TrOCREngine()
 
+
 # =====================================================================
-# WINOCR & TESSERACT ENGINES (FOR PRINTED TEXT)
+# WINOCR & TESSERACT ENGINES (FOR SCANNED PRINTED TEXT ONLY)
 # =====================================================================
 
-def _run_winocr_sync(target_img: Image.Image) -> Tuple[str, List[RecognizedLine]]:
-    """Windows WinRT OCR execution with line coordinate extraction."""
-    if _is_blank_page(target_img):
-        return "", []
-
-    # 1. Try Windows WinRT OCR
-    if sys.platform == "win32":
+def _run_winocr_sync(target_img: Image.Image, page_number: int = 1) -> Tuple[str, List[RecognizedLine]]:
+    """Windows WinRT OCR execution for printed text documents."""
+    lines_found: List[RecognizedLine] = []
+    try:
+        import winocr
+        rgb_img = target_img.convert("RGB") if target_img.mode != "RGB" else target_img
+        loop = asyncio.new_event_loop()
         try:
-            try:
-                import ctypes
-                ctypes.windll.ole32.CoInitialize(None)
-            except Exception:
-                pass
+            ocr_result = loop.run_until_complete(winocr.recognize_pil(rgb_img, lang="en"))
+        finally:
+            loop.close()
 
-            import winocr
-            res = None
+        if ocr_result and hasattr(ocr_result, "lines"):
+            for idx, line in enumerate(ocr_result.lines, start=1):
+                txt = getattr(line, "text", "").strip()
+                if not txt:
+                    continue
+                bbox = (0, 0, target_img.width, target_img.height)
+                if hasattr(line, "words") and line.words:
+                    min_x = min(getattr(w.bounding_rect, "x", 0) for w in line.words)
+                    min_y = min(getattr(w.bounding_rect, "y", 0) for w in line.words)
+                    max_x = max(getattr(w.bounding_rect, "x", 0) + getattr(w.bounding_rect, "width", 0) for w in line.words)
+                    max_y = max(getattr(w.bounding_rect, "y", 0) + getattr(w.bounding_rect, "height", 0) for w in line.words)
+                    bbox = (int(min_x), int(min_y), int(max_x), int(max_y))
 
-            # Prefer synchronous API if available, else asyncio event loop
-            if hasattr(winocr, "recognize_pil_sync"):
-                try:
-                    res = winocr.recognize_pil_sync(target_img)
-                except Exception:
-                    res = None
+                rec_score = 0.90
+                lines_found.append(RecognizedLine(
+                    line_number=idx,
+                    page_number=page_number,
+                    raw_text=txt,
+                    text=txt,
+                    normalized_text=_normalize_for_indexing(txt),
+                    recognition_score=rec_score,
+                    variant_agreement=1.0,
+                    uncertainty_score=0.10,
+                    confidence=0.90,
+                    bbox=bbox,
+                    center_y=int((bbox[1] + bbox[3]) / 2),
+                    doc_type="scanned_printed",
+                    ocr_engine="winocr",
+                    flagged_for_review=False,
+                    uncertain_words=[],
+                    candidate_details=None
+                ))
+            full_txt = "\n".join(l.text for l in lines_found)
+            return full_txt, lines_found
+    except Exception as e:
+        logger.debug(f"WinOCR printed fallback: {e}")
 
-            if res is None:
-                loop = asyncio.new_event_loop()
-                try:
-                    res = loop.run_until_complete(winocr.recognize_pil(target_img))
-                finally:
-                    loop.close()
-
-            lines_data: List[RecognizedLine] = []
-
-            # Handle object-based response
-            if hasattr(res, "lines") and res.lines:
-                for idx, line_obj in enumerate(res.lines, start=1):
-                    l_text = (getattr(line_obj, "text", "") or "").strip()
-                    if not l_text:
-                        continue
-                    words = getattr(line_obj, "words", [])
-                    if words:
-                        x1 = int(min(w.bounding_rect.x for w in words))
-                        y1 = int(min(w.bounding_rect.y for w in words))
-                        x2 = int(max(w.bounding_rect.x + w.bounding_rect.width for w in words))
-                        y2 = int(max(w.bounding_rect.y + w.bounding_rect.height for w in words))
-                        bbox = (x1, y1, x2, y2)
-                    else:
-                        bbox = (0, 0, target_img.size[0], 30)
-
-                    lines_data.append(RecognizedLine(
-                        line_number=idx,
-                        text=l_text,
-                        confidence=0.88,
-                        bbox=bbox,
-                        doc_type="scanned_printed",
-                        ocr_engine="winocr",
-                        flagged_for_review=False,
-                        uncertain_words=[]
-                    ))
-
-            # Handle dict-based response
-            elif isinstance(res, dict) and "lines" in res:
-                for idx, line_dict in enumerate(res.get("lines", []), start=1):
-                    l_text = (line_dict.get("text", "") or "").strip()
-                    if not l_text:
-                        continue
-                    rect = line_dict.get("bounding_rect") or {}
-                    x1 = int(rect.get("x", 0))
-                    y1 = int(rect.get("y", 0))
-                    x2 = int(x1 + rect.get("width", target_img.size[0]))
-                    y2 = int(y1 + rect.get("height", 30))
-                    lines_data.append(RecognizedLine(
-                        line_number=idx,
-                        text=l_text,
-                        confidence=0.88,
-                        bbox=(x1, y1, x2, y2),
-                        doc_type="scanned_printed",
-                        ocr_engine="winocr",
-                        flagged_for_review=False,
-                        uncertain_words=[]
-                    ))
-
-            if lines_data:
-                # Natural reading order
-                lines_data.sort(key=lambda l: (round(l.bbox[1] / 24) * 24, l.bbox[0]))
-                for i, l in enumerate(lines_data, start=1):
-                    l.line_number = i
-                extracted = "\n".join(l.text for l in lines_data)
-                if len(extracted.strip()) >= 5:
-                    return _clean_ocr_text(extracted), lines_data
-
-        except Exception as e:
-            logger.warning(f"Windows OCR failed: {type(e).__name__}: {e}")
-
-    # 2. Try Tesseract OCR
-    pytess = _get_configured_tesseract()
-    if pytess:
+    # Tesseract fallback
+    tess = _get_configured_tesseract()
+    if tess:
         try:
-            text = pytess.image_to_string(target_img, config="--oem 3 --psm 3")
-            if text and text.strip():
-                lines_split = [l.strip() for l in text.split("\n") if l.strip()]
-                tess_lines = [
-                    RecognizedLine(
-                        line_number=i,
-                        text=l,
-                        confidence=0.82,
-                        bbox=(0, i * 35, target_img.size[0], (i + 1) * 35),
-                        doc_type="scanned_printed",
-                        ocr_engine="tesseract",
-                        flagged_for_review=False,
-                        uncertain_words=[]
-                    )
-                    for i, l in enumerate(lines_split, start=1)
-                ]
-                return _clean_ocr_text(text), tess_lines
+            data = tess.image_to_data(target_img, output_type=tess.Output.DICT)
+            n_boxes = len(data["text"])
+            line_map: Dict[int, List[str]] = {}
+            line_boxes: Dict[int, List[Tuple[int, int, int, int]]] = {}
+
+            for i in range(n_boxes):
+                w_text = data["text"][i].strip()
+                if not w_text:
+                    continue
+                l_num = data["line_num"][i]
+                line_map.setdefault(l_num, []).append(w_text)
+                bx = (data["left"][i], data["top"][i], data["left"][i] + data["width"][i], data["top"][i] + data["height"][i])
+                line_boxes.setdefault(l_num, []).append(bx)
+
+            for idx, (l_num, w_list) in enumerate(sorted(line_map.items()), start=1):
+                txt = " ".join(w_list).strip()
+                bxs = line_boxes[l_num]
+                min_x = min(b[0] for b in bxs)
+                min_y = min(b[1] for b in bxs)
+                max_x = max(b[2] for b in bxs)
+                max_y = max(b[3] for b in bxs)
+                lines_found.append(RecognizedLine(
+                    line_number=idx,
+                    page_number=page_number,
+                    raw_text=txt,
+                    text=txt,
+                    normalized_text=_normalize_for_indexing(txt),
+                    recognition_score=0.85,
+                    variant_agreement=1.0,
+                    uncertainty_score=0.15,
+                    confidence=0.85,
+                    bbox=(min_x, min_y, max_x, max_y),
+                    center_y=int((min_y + max_y) / 2),
+                    doc_type="scanned_printed",
+                    ocr_engine="tesseract",
+                    flagged_for_review=False,
+                    uncertain_words=[],
+                    candidate_details=None
+                ))
+            return "\n".join(l.text for l in lines_found), lines_found
         except Exception as e:
-            logger.warning(f"Tesseract OCR failed: {type(e).__name__}: {e}")
+            logger.debug(f"Tesseract fallback: {e}")
 
     return "", []
 
-def _run_paddleocr_sync(target_img: Image.Image) -> Tuple[str, List[RecognizedLine]]:
-    """Runs PaddleOCR on document image. TOP PRIORITY OCR ENGINE."""
+def _run_paddleocr_sync(target_img: Image.Image, page_number: int = 1) -> Tuple[str, List[RecognizedLine]]:
+    """Runs PaddleOCR on printed documents."""
     paddle_engine = _get_paddle_ocr()
-    if not paddle_engine:
-        logger.warning("PaddleOCR engine not available, cannot run PaddleOCR.")
+    if paddle_engine is None:
         return "", []
 
     try:
-        np_img = np.array(target_img)
-        if np_img.ndim == 2:
-            # Grayscale -> RGB for PaddleOCR
-            np_img = np.stack([np_img] * 3, axis=-1)
-        elif np_img.shape[2] == 4:
-            # RGBA -> RGB
-            np_img = np_img[:, :, :3]
+        np_img = np.array(target_img.convert("RGB"))
+        ocr_res = paddle_engine.ocr(np_img, cls=True)
 
-        logger.info(f"Running PaddleOCR on image of shape {np_img.shape}")
-        paddle_res = paddle_engine.ocr(np_img, cls=True)
-        lines_data: List[RecognizedLine] = []
+        if not ocr_res or ocr_res == [None] or len(ocr_res) == 0:
+            return "", []
 
-        if paddle_res and paddle_res[0]:
-            for idx, line_info in enumerate(paddle_res[0], start=1):
-                try:
-                    box, (l_text, conf) = line_info
-                    x1 = int(min(p[0] for p in box))
-                    y1 = int(min(p[1] for p in box))
-                    x2 = int(max(p[0] for p in box))
-                    y2 = int(max(p[1] for p in box))
-                    lines_data.append(RecognizedLine(
-                        line_number=idx,
-                        text=l_text.strip(),
-                        confidence=float(conf),
-                        bbox=(x1, y1, x2, y2),
-                        doc_type="scanned_printed",
-                        ocr_engine="paddleocr",
-                        flagged_for_review=False,
-                        uncertain_words=[]
-                    ))
-                except (ValueError, TypeError) as parse_err:
-                    logger.debug(f"PaddleOCR line {idx} parse error: {parse_err}, raw: {line_info}")
-                    continue
+        lines_found: List[RecognizedLine] = []
+        page_results = ocr_res[0] if (isinstance(ocr_res, list) and len(ocr_res) > 0 and isinstance(ocr_res[0], list)) else ocr_res
 
-            if lines_data:
-                lines_data.sort(key=lambda l: (round(l.bbox[1] / 24) * 24, l.bbox[0]))
-                for i, l in enumerate(lines_data, start=1):
-                    l.line_number = i
-                extracted = "\n".join(l.text for l in lines_data)
-                logger.info(f"PaddleOCR extracted {len(lines_data)} lines successfully.")
-                return _clean_ocr_text(extracted), lines_data
-        else:
-            logger.info(f"PaddleOCR returned no results (res={paddle_res})")
+        if not page_results:
+            return "", []
+
+        for idx, item in enumerate(page_results, start=1):
+            if not item or len(item) < 2:
+                continue
+            box_points = item[0]
+            text_conf_tuple = item[1]
+
+            text_content = text_conf_tuple[0].strip() if len(text_conf_tuple) > 0 else ""
+            if not text_content:
+                continue
+
+            conf_val = float(text_conf_tuple[1]) if len(text_conf_tuple) > 1 else 0.85
+
+            x_coords = [p[0] for p in box_points]
+            y_coords = [p[1] for p in box_points]
+            min_x, max_x = int(min(x_coords)), int(max(x_coords))
+            min_y, max_y = int(min(y_coords)), int(max(y_coords))
+
+            lines_found.append(RecognizedLine(
+                line_number=idx,
+                page_number=page_number,
+                raw_text=text_content,
+                text=text_content,
+                normalized_text=_normalize_for_indexing(text_content),
+                recognition_score=round(conf_val, 3),
+                variant_agreement=1.0,
+                uncertainty_score=round(max(0.05, 1.0 - conf_val), 3),
+                confidence=round(conf_val, 3),
+                bbox=(min_x, min_y, max_x, max_y),
+                center_y=int((min_y + max_y) / 2),
+                doc_type="scanned_printed",
+                ocr_engine="paddleocr",
+                flagged_for_review=conf_val < 0.70,
+                uncertain_words=[],
+                candidate_details=None
+            ))
+
+        full_text = "\n".join(l.text for l in lines_found)
+        return full_text, lines_found
     except Exception as e:
-        logger.warning(f"PaddleOCR recognition failed: {type(e).__name__}: {e}")
-        import traceback
-        logger.debug(traceback.format_exc())
+        logger.warning(f"PaddleOCR recognition failed: {e}")
+        return "", []
 
-    return "", []
 
 # =====================================================================
-# STEP 5: OCR QUALITY GATE & CONFIDENCE EVALUATION
+# STEP 5: SPATIAL MATCHING & MULTI-FACTOR CANDIDATE SELECTION
 # =====================================================================
 
-def _evaluate_line_confidence(text: str, model_confidence: float) -> Tuple[float, bool, List[str]]:
+def _normalize_for_indexing(text: str) -> str:
+    """Helper for downstream plagiarism similarity indexing without altering authoritative OCR text."""
+    t = re.sub(r"\s+", " ", text).strip()
+    return t
+
+def _compute_token_agreement(text_a: str, text_b: str) -> float:
+    """Computes word and character overlap ratio between two candidate texts (0.0 to 1.0)."""
+    if not text_a and not text_b:
+        return 1.0
+    if not text_a or not text_b:
+        return 0.0
+
+    words_a = text_a.split()
+    words_b = text_b.split()
+
+    if not words_a or not words_b:
+        return 0.0
+
+    set_a, set_b = set(words_a), set(words_b)
+    word_overlap = len(set_a & set_b) / float(len(set_a | set_b))
+
+    len_a, len_b = len(text_a), len(text_b)
+    dp = [[0] * (len_b + 1) for _ in range(len_a + 1)]
+    for i in range(len_a + 1):
+        dp[i][0] = i
+    for j in range(len_b + 1):
+        dp[0][j] = j
+    for i in range(1, len_a + 1):
+        for j in range(1, len_b + 1):
+            cost = 0 if text_a[i - 1] == text_b[j - 1] else 1
+            dp[i][j] = min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
+    lev_sim = 1.0 - (float(dp[len_a][len_b]) / max(len_a, len_b, 1))
+
+    return round(float(0.5 * word_overlap + 0.5 * max(0.0, lev_sim)), 3)
+
+def _evaluate_line_anomalies(text: str) -> Tuple[float, List[str]]:
     """
-    Evaluates line confidence using token validities and noise metrics.
-    Flags words with high consonant clusters, erratic casing, or stray punctuation.
+    Evaluates character and token plausibility for uncertainty scoring ONLY.
+    IMPORTANT: Single-character tokens (A, x, n, Q, 1, etc.) are NOT penalized.
+    Preserves math, programming code, formulas, and abbreviations without rewriting text.
     """
     words = text.split()
     if not words:
-        return 0.0, True, []
+        return 1.0, []
 
     uncertain_words = []
-    suspicious_chars = 0
+    penalty = 0.0
 
     for w in words:
+        if "\ufffd" in w or "\\x" in w or "|" in w or "~" in w or "^" in w:
+            uncertain_words.append(w)
+            penalty += 0.15
+            continue
+
+        # Mathematical and technical tokens are fully valid
+        if re.search(r"^[<>=!+\-*/_#&|~`]+$", w) or re.search(r"^\d+[\w\^\.]*$", w):
+            continue
+
         clean_w = re.sub(r"^[^\w]+|[^\w]+$", "", w)
-        # 1. Long words with no vowels
+        if not clean_w:
+            continue
+
+        # Single characters are legitimate (math variables, options, code) - NO PENALTY
+        if len(clean_w) <= 2:
+            continue
+
+        # Digit mixed inside alphabetical word (OCR digit substitution artifact e.g. pr0c3ssing)
+        if re.search(r"[a-zA-Z]+\d+[a-zA-Z]+", clean_w):
+            uncertain_words.append(w)
+            penalty += 0.12
+            continue
+
+        # Long consonant clusters with no vowels in non-technical tokens (e.g. sytctc, smlrt, mdls)
         if len(clean_w) >= 4 and not re.search(r"[aeiouyAEIOUY]", clean_w):
             uncertain_words.append(w)
-        # 2. Erratic mid-word capitalization (e.g., 'artiFIcial')
-        elif re.search(r"[a-z]+[A-Z]{2,}[a-z]+", clean_w):
-            uncertain_words.append(w)
-        # 3. Digits sandwiched inside letters (e.g. 'int3lligence')
-        elif re.search(r"[a-zA-Z]+\d+[a-zA-Z]+", clean_w):
-            uncertain_words.append(w)
+            penalty += 0.10
 
-        # Stray noise characters
-        if re.search(r"[|~`_{}\[\]<>\\]", w):
-            suspicious_chars += 1
+    return round(min(0.40, penalty), 3), uncertain_words
 
-    adjusted_conf = model_confidence
-    if uncertain_words:
-        penalty = min(0.35, 0.08 * len(uncertain_words))
-        adjusted_conf = max(0.10, adjusted_conf - penalty)
+def _select_best_candidate(
+    cand1_text: str,
+    cand1_score: float,
+    cand2_text: str,
+    cand2_score: float,
+    line_number: int,
+    page_number: int,
+    bbox: Tuple[int, int, int, int],
+    crop_img: Optional[Image.Image] = None
+) -> RecognizedLine:
+    """
+    Multi-Factor Candidate Selection with 3rd Hypothesis Arbitration:
+    - If Pass 1 and Pass 2 disagree severely (agreement < 0.60), runs a 3rd hypothesis crop.
+    - Preserves all candidates in candidate_details.
+    - Never mutates raw_text. Flags line explicitly if disagreement persists.
+    """
+    agreement = _compute_token_agreement(cand1_text, cand2_text)
+    cand3_text = ""
+    cand3_score = 0.0
+    third_hypothesis_used = False
 
-    if suspicious_chars > 0:
-        adjusted_conf = max(0.10, adjusted_conf - 0.12)
+    # Severe Disagreement Handling: trigger 3rd deterministic hypothesis
+    if cand1_text.strip() and cand2_text.strip() and agreement < 0.60 and crop_img is not None:
+        try:
+            high_contrast_crop = ImageOps.autocontrast(crop_img.convert("L"), cutoff=1.5)
+            enhancer = ImageEnhance.Contrast(high_contrast_crop)
+            boosted_crop = enhancer.enhance(1.30).filter(ImageFilter.UnsharpMask(radius=1.0, percent=40, threshold=2)).convert("RGB")
+            c3_res = _trocr_engine.recognize_lines_batch([boosted_crop], batch_size=1)
+            if c3_res and len(c3_res) > 0:
+                cand3_text, cand3_score = c3_res[0]
+                third_hypothesis_used = True
+        except Exception as ex_c3:
+            logger.debug(f"3rd hypothesis generation skipped: {ex_c3}")
 
-    flagged = (adjusted_conf < 0.72) or (len(uncertain_words) / max(len(words), 1) > 0.25)
-    return round(adjusted_conf, 3), flagged, uncertain_words
+    anomaly_pen1, uncert1 = _evaluate_line_anomalies(cand1_text)
+    anomaly_pen2, uncert2 = _evaluate_line_anomalies(cand2_text)
+    anomaly_pen3, uncert3 = _evaluate_line_anomalies(cand3_text) if third_hypothesis_used else (0.0, [])
+
+    q1 = cand1_score - anomaly_pen1
+    q2 = cand2_score - anomaly_pen2
+    q3 = cand3_score - anomaly_pen3 if third_hypothesis_used else -999.0
+
+    if not cand1_text.strip() and (cand2_text.strip() or cand3_text.strip()):
+        q1 -= 1.0
+    if not cand2_text.strip() and (cand1_text.strip() or cand3_text.strip()):
+        q2 -= 1.0
+
+    # Agreement matrix with 3rd candidate
+    agr_13 = _compute_token_agreement(cand1_text, cand3_text) if third_hypothesis_used else 0.0
+    agr_23 = _compute_token_agreement(cand2_text, cand3_text) if third_hypothesis_used else 0.0
+
+    is_divergent = bool(cand1_text.strip() and cand2_text.strip() and agreement < 0.60)
+    disagreement_severe = is_divergent and not (agr_13 >= 0.70 or agr_23 >= 0.70)
+
+    # Candidate selection logic
+    if third_hypothesis_used and agr_23 >= 0.70 and q2 >= q1:
+        chosen_text = cand2_text
+        chosen_score = cand2_score
+        chosen_uncert = uncert2
+        chosen_engine = "trocr_pass2_verified_by_pass3"
+    elif third_hypothesis_used and agr_13 >= 0.70:
+        chosen_text = cand1_text
+        chosen_score = cand1_score
+        chosen_uncert = uncert1
+        chosen_engine = "trocr_pass1_verified_by_pass3"
+    elif q2 > q1:
+        chosen_text = cand2_text
+        chosen_score = cand2_score
+        chosen_uncert = uncert2
+        chosen_engine = "trocr_pass2"
+    else:
+        chosen_text = cand1_text
+        chosen_score = cand1_score
+        chosen_uncert = uncert1
+        chosen_engine = "trocr"
+
+    # Transparent uncertainty calculation
+    base_uncertainty = max(0.02, 1.0 - chosen_score)
+    if is_divergent:
+        base_uncertainty = min(0.95, base_uncertainty + 0.25)
+    if disagreement_severe:
+        base_uncertainty = min(0.98, base_uncertainty + 0.20)
+    if chosen_uncert:
+        base_uncertainty = min(0.95, base_uncertainty + min(0.30, 0.08 * len(chosen_uncert)))
+
+    uncertainty_score = round(base_uncertainty, 3)
+    flagged = (uncertainty_score > 0.35) or is_divergent or (len(chosen_uncert) > 0)
+    conf_legacy = round(max(0.05, 1.0 - uncertainty_score), 3)
+
+    return RecognizedLine(
+        line_number=line_number,
+        page_number=page_number,
+        raw_text=chosen_text,
+        text=chosen_text,
+        normalized_text=_normalize_for_indexing(chosen_text),
+        recognition_score=chosen_score,
+        variant_agreement=agreement,
+        uncertainty_score=uncertainty_score,
+        confidence=conf_legacy,
+        bbox=bbox,
+        center_y=int((bbox[1] + bbox[3]) / 2),
+        doc_type="handwritten",
+        ocr_engine=chosen_engine,
+        flagged_for_review=flagged,
+        uncertain_words=chosen_uncert,
+        candidate_details={
+            "pass1_text": cand1_text,
+            "pass1_score": cand1_score,
+            "pass2_text": cand2_text,
+            "pass2_score": cand2_score,
+            "pass3_text": cand3_text if third_hypothesis_used else None,
+            "pass3_score": cand3_score if third_hypothesis_used else None,
+            "token_agreement_p1_p2": agreement,
+            "is_divergent": is_divergent,
+            "disagreement_severe": disagreement_severe,
+            "all_candidates": [c for c in [cand1_text, cand2_text, cand3_text] if c]
+        }
+    )
+
+
+# =====================================================================
+# STEP 6: TWO-STAGE HYBRID PIPELINE WITH SPATIAL RECONSTRUCTION
+# =====================================================================
 
 def _reconstruct_page(
     lines: List[RecognizedLine],
     doc_type: str,
     page_number: int,
-    engine_name: str
+    engine_name: str,
+    diagnostics: Optional[SegmentationDiagnostics] = None
 ) -> Dict[str, Any]:
-    """Combines recognized lines into structured page hierarchy."""
+    """Combines recognized lines into structured page hierarchy and metadata."""
     sorted_lines = sorted(lines, key=lambda l: (l.bbox[1], l.bbox[0]))
     for idx, l in enumerate(sorted_lines, start=1):
         l.line_number = idx
@@ -1016,28 +1170,39 @@ def _reconstruct_page(
     if not full_text and sorted_lines:
         full_text = "\n".join(l.text.strip() for l in sorted_lines if l.text.strip())
 
+    avg_rec_score = (
+        round(sum(l.recognition_score for l in sorted_lines) / max(len(sorted_lines), 1), 3)
+        if sorted_lines else 0.0
+    )
+    avg_agreement = (
+        round(sum(l.variant_agreement for l in sorted_lines) / max(len(sorted_lines), 1), 3)
+        if sorted_lines else 1.0
+    )
     avg_conf = (
         round(sum(l.confidence for l in sorted_lines) / max(len(sorted_lines), 1), 3)
         if sorted_lines else 0.0
     )
     flagged_count = sum(1 for l in sorted_lines if l.flagged_for_review)
-    needs_review = (flagged_count > 0) or (avg_conf < 0.72)
+    needs_review = (flagged_count > 0) or (avg_conf < 0.70)
+
+    if diagnostics and diagnostics.segmentation_warning:
+        needs_review = True
 
     return {
         "page_number": page_number,
-        "text": _clean_ocr_text(full_text),
+        "text": full_text,
+        "raw_text": full_text,
         "ocr_engine": engine_name,
         "line_count": len(sorted_lines),
         "doc_type": doc_type,
+        "avg_recognition_score": avg_rec_score,
+        "avg_variant_agreement": avg_agreement,
         "avg_confidence": avg_conf,
         "flagged_lines_count": flagged_count,
         "needs_review": needs_review,
+        "segmentation_diagnostics": diagnostics.to_dict() if diagnostics else {},
         "lines": [asdict(l) for l in sorted_lines]
     }
-
-# =====================================================================
-# STEP 6: TWO-STAGE HYBRID PIPELINE WITH VERIFICATION
-# =====================================================================
 
 def _recognize_image_hybrid(
     pil_image: Image.Image,
@@ -1046,367 +1211,316 @@ def _recognize_image_hybrid(
     """
     Two-Stage Hybrid Recognition Pipeline:
     1. Classifies page (handwritten vs printed vs mixed).
-    2. Routes directly to appropriate engine:
+    2. Routes directly to appropriate local engine:
        - Printed -> PaddleOCR primary, WinOCR / Tesseract fallback.
-       - Handwritten -> Padded line segmentation + TrOCR recognition.
-         (TrOCR is NEVER bypassed or overwritten by WinOCR for handwriting).
-    3. Multi-Pass Quality Verification:
-       - If first pass confidence is low, runs second pass with alternate preprocessing.
-       - Compares Pass 1 vs Pass 2 consistency.
-       - Flags uncertain pages for human review (needs_review = True) instead of guessing.
+       - Handwritten -> Padded line segmentation + local TrOCR recognition.
+    3. Multi-Pass Spatial Verification for Handwriting:
+       - Matches Pass 1 lines with Pass 2 lines by spatial vertical overlap.
+       - PRESERVES unmatched Pass-2 lines in final output with segmentation mismatch flags.
+       - Multi-factor candidate selection with 3rd hypothesis arbitration for severe disagreements.
+    4. Granular Debug Logging when DEBUG_HANDWRITING_OCR is active.
     """
     if _is_blank_page(pil_image):
         return "", {
             "page_number": page_number,
             "text": "",
+            "raw_text": "",
             "ocr_engine": "none",
             "line_count": 0,
             "doc_type": "blank",
+            "avg_recognition_score": 1.0,
+            "avg_variant_agreement": 1.0,
             "avg_confidence": 1.0,
             "flagged_lines_count": 0,
             "needs_review": False,
+            "segmentation_diagnostics": {},
             "lines": []
         }
 
-    # Step 1: Document classification
+def _legacy_recognize_handwritten_image(
+    pil_image: Image.Image,
+    page_number: int = 1
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    LEGACY Handwritten Recognition Implementation (PRESERVED INTACT FOR FALLBACK & TESTING).
+    Multi-pass spatial verification with TrOCR base model.
+    """
+    recognized_lines: List[RecognizedLine] = []
+    primary_engine_name = "trocr_legacy"
+    diagnostics = SegmentationDiagnostics()
+
+    logger.info(f"Page {page_number}: Executing LEGACY TrOCR handwriting pipeline.")
+    prep_img_pass1 = _preprocess_handwritten_image(pil_image, variant="gentle")
+
+    line_regions, diagnostics = segment_text_lines(prep_img_pass1)
+    _trocr_engine.load_model()
+
+    if _trocr_engine.is_loaded and line_regions:
+        primary_engine_name = "trocr"
+        crops_p1 = [r.image for r in line_regions]
+        batch_results_p1 = _trocr_engine.recognize_lines_batch(crops_p1, batch_size=4)
+
+        # Adaptive Pass 2 with illumination normalization
+        needs_pass2 = any(score < 0.76 for (_, score) in batch_results_p1) or diagnostics.segmentation_warning
+        batch_results_p2: Dict[int, Tuple[str, float]] = {}
+        unmatched_p2_lines: List[RecognizedLine] = []
+
+        if needs_pass2:
+            logger.info(f"Page {page_number}: Executing Pass 2 with illumination-normalized crops.")
+            prep_img_pass2 = _preprocess_handwritten_image(pil_image, variant="illumination")
+            line_regions_p2, diag_p2 = segment_text_lines(prep_img_pass2)
+
+            crops_p2 = [r.image for r in line_regions_p2]
+            res_p2 = _trocr_engine.recognize_lines_batch(crops_p2, batch_size=4)
+
+            matched_p2_indices: Set[int] = set()
+
+            # Spatial Line Matcher between Pass 1 and Pass 2
+            for idx2, (r2, (txt2, sc2)) in enumerate(zip(line_regions_p2, res_p2)):
+                best_match_idx = None
+                best_overlap = 0.0
+                for idx1, r1 in enumerate(line_regions):
+                    top = max(r1.bbox[1], r2.bbox[1])
+                    bottom = min(r1.bbox[3], r2.bbox[3])
+                    if bottom > top:
+                        overlap = (bottom - top) / float(max(r1.bbox[3] - r1.bbox[1], r2.bbox[3] - r2.bbox[1], 1))
+                        if overlap > best_overlap:
+                            best_overlap = overlap
+                            best_match_idx = idx1
+
+                if best_match_idx is not None and best_overlap >= 0.40:
+                    batch_results_p2[best_match_idx] = (txt2, sc2)
+                    matched_p2_indices.add(idx2)
+                else:
+                    diagnostics.unmatched_lines_count += 1
+                    diagnostics.split_lines_count += 1
+                    diagnostics.segmentation_warning = True
+
+                    if txt2 and txt2.strip():
+                        unmatched_line = RecognizedLine(
+                            line_number=len(line_regions) + len(unmatched_p2_lines) + 1,
+                            page_number=page_number,
+                            raw_text=txt2,
+                            text=txt2,
+                            normalized_text=_normalize_for_indexing(txt2),
+                            recognition_score=sc2,
+                            variant_agreement=0.0,
+                            uncertainty_score=round(max(0.40, 1.0 - sc2), 3),
+                            confidence=round(max(0.05, sc2 * 0.75), 3),
+                            bbox=r2.bbox,
+                            center_y=r2.center_y,
+                            doc_type="handwritten",
+                            ocr_engine="trocr_pass2_unmatched",
+                            flagged_for_review=True,
+                            uncertain_words=[],
+                            candidate_details={
+                                "pass1_text": "",
+                                "pass1_score": 0.0,
+                                "pass2_text": txt2,
+                                "pass2_score": sc2,
+                                "unmatched_pass2": True,
+                                "segmentation_mismatch": True
+                            }
+                        )
+                        unmatched_p2_lines.append(unmatched_line)
+
+        # Build final recognized lines with candidate selection & debugging
+        debug_dir = Path("debug_handwriting") / f"page_{page_number:03d}" if DEBUG_HANDWRITING_OCR else None
+        if debug_dir:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+
+        for idx, (r, (text1, score1)) in enumerate(zip(line_regions, batch_results_p1), start=1):
+            p2_match = batch_results_p2.get(idx - 1, ("", 0.0))
+            text2, score2 = p2_match
+
+            rec_line = _select_best_candidate(
+                cand1_text=text1,
+                cand1_score=score1,
+                cand2_text=text2,
+                cand2_score=score2,
+                line_number=idx,
+                page_number=page_number,
+                bbox=r.bbox,
+                crop_img=r.image
+            )
+            recognized_lines.append(rec_line)
+
+            if debug_dir:
+                try:
+                    r.image.save(str(debug_dir / f"line_{idx:03d}_original.png"))
+                    if r.line_removed_crop:
+                        r.line_removed_crop.save(str(debug_dir / f"line_{idx:03d}_line_removed.png"))
+                    with open(debug_dir / f"line_{idx:03d}_result.txt", "w", encoding="utf-8") as df:
+                        df.write(f"Raw Text: {rec_line.raw_text}\nScore: {rec_line.recognition_score}\nAgreement: {rec_line.variant_agreement}\nUncertainty: {rec_line.uncertainty_score}\nFlagged: {rec_line.flagged_for_review}\nCandidates: {json.dumps(rec_line.candidate_details, indent=2)}\n")
+                except Exception as e:
+                    logger.debug(f"Debug save error on line {idx}: {e}")
+
+        if unmatched_p2_lines:
+            recognized_lines.extend(unmatched_p2_lines)
+
+    # TrOCR failure / fallback handling
+    if not recognized_lines:
+        logger.warning(f"Page {page_number}: TrOCR produced no lines for handwriting.")
+        win_text, win_lines = _run_winocr_sync(prep_img_pass1, page_number=page_number)
+        for wl in win_lines:
+            wl.doc_type = "handwritten"
+            wl.ocr_engine = "printed_ocr_fallback_on_handwriting"
+            wl.flagged_for_review = True
+            wl.uncertainty_score = 0.90
+            wl.confidence = 0.10
+            recognized_lines.append(wl)
+        primary_engine_name = "printed_ocr_fallback_on_handwriting" if win_lines else "trocr_handwriting_failed"
+
+    page_struct = _reconstruct_page(recognized_lines, "handwritten", page_number, primary_engine_name, diagnostics)
+    return page_struct["text"], page_struct
+
+
+def _evaluate_line_confidence(text: str, model_score: float = 0.85) -> Tuple[float, bool, List[str]]:
+    """Legacy helper for test compatibility."""
+    penalty, uncertain = _evaluate_line_anomalies(text)
+    conf = round(max(0.05, min(0.99, model_score - penalty)), 2)
+    flagged = (conf < 0.70) or (len(uncertain) > 0)
+    return conf, flagged, uncertain
+
+
+def _clean_ocr_text(text: str) -> str:
+    """Helper for clean text output."""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _recognize_image_hybrid(
+    pil_image: Image.Image,
+    page_number: int = 1
+) -> Tuple[str, Dict[str, Any]]:
+    """
+    Two-Stage Hybrid Recognition Pipeline:
+    1. Classifies page (handwritten vs printed vs mixed).
+    2. Routes directly to appropriate local engine:
+       - Printed -> PaddleOCR primary, WinOCR / Tesseract fallback (100% PRESERVED).
+       - Handwritten -> NEW Handwritten OCR Pipeline (with legacy fallback).
+    """
+    if _is_blank_page(pil_image):
+        return "", {
+            "page_number": page_number,
+            "text": "",
+            "raw_text": "",
+            "ocr_engine": "none",
+            "line_count": 0,
+            "doc_type": "blank",
+            "avg_recognition_score": 1.0,
+            "avg_variant_agreement": 1.0,
+            "avg_confidence": 1.0,
+            "flagged_lines_count": 0,
+            "needs_review": False,
+            "segmentation_diagnostics": {},
+            "lines": []
+        }
+
     doc_type = classify_document_type(pil_image)
     logger.info(f"Page {page_number} classified as: '{doc_type}'")
 
     recognized_lines: List[RecognizedLine] = []
     primary_engine_name = "unknown"
+    diagnostics = SegmentationDiagnostics()
 
     # =================================================================
     # PATH A: HANDWRITTEN / MIXED DOCUMENT PIPELINE
     # =================================================================
     if doc_type in ("handwritten", "mixed"):
-        logger.info(f"Page {page_number}: Routing to handwritten document OCR pipeline.")
-        prep_img = _preprocess_handwritten_image(pil_image, variant="gentle")
+        try:
+            from backend.app.ml.handwritten_ocr_pipeline import handwritten_ocr_pipeline
+            logger.info(f"Page {page_number}: Routing to Local ONNX TrOCR handwritten pipeline.")
+            page_struct = handwritten_ocr_pipeline.process_image(pil_image, page_number=page_number)
+            if page_struct.get("text") or page_struct.get("lines"):
+                return page_struct["text"], page_struct
+        except Exception as ex_new:
+            logger.warning(f"ONNX handwritten pipeline fallback to legacy due to: {ex_new}")
 
-        # 1. Top-Priority: PaddleOCR (specialized multi-angle DBNet + SVTR recognition)
-        paddle_text, paddle_lines = _run_paddleocr_sync(prep_img)
-        if not paddle_lines or len(paddle_lines) < 2:
-            paddle_text, paddle_lines = _run_paddleocr_sync(pil_image)
-
-        if paddle_lines and len(paddle_lines) >= 1:
-            primary_engine_name = "paddleocr_handwriting"
-            for pl in paddle_lines:
-                conf_val, flagged, uncert = _evaluate_line_confidence(pl.text, pl.confidence)
-                pl.confidence = conf_val
-                pl.flagged_for_review = flagged
-                pl.uncertain_words = uncert
-                pl.doc_type = "handwritten"
-                recognized_lines.append(pl)
-
-        # 2. Secondary: TrOCR Single-Line Handwriting Model
-        if not recognized_lines:
-            line_regions = segment_text_lines(prep_img)
-            _trocr_engine.load_model()
-            if _trocr_engine.is_loaded:
-                primary_engine_name = "trocr"
-                line_crops = [r.image for r in line_regions]
-                batch_results = _trocr_engine.recognize_lines_batch(line_crops, batch_size=4)
-
-                for r, (l_text, raw_conf) in zip(line_regions, batch_results):
-                    if l_text and l_text.strip():
-                        final_conf, flagged, uncert = _evaluate_line_confidence(l_text, raw_conf)
-                        recognized_lines.append(RecognizedLine(
-                            line_number=r.line_number,
-                            text=l_text,
-                            confidence=final_conf,
-                            bbox=r.bbox,
-                            doc_type="handwritten",
-                            ocr_engine="trocr",
-                            flagged_for_review=flagged,
-                            uncertain_words=uncert
-                        ))
-
-        # 3. Fallback: Windows WinRT OCR / Tesseract
-        if not recognized_lines:
-            logger.warning(f"Page {page_number}: Neural engines unavailable, using fallback OCR engine for handwriting.")
-            win_text, win_lines = _run_winocr_sync(prep_img)
-            if not win_lines:
-                win_text, win_lines = _run_winocr_sync(pil_image)
-            for wl in win_lines:
-                wl.doc_type = "handwritten"
-                final_conf, _, uncert = _evaluate_line_confidence(wl.text, wl.confidence * 0.85)
-                wl.confidence = final_conf
-                wl.flagged_for_review = True
-                wl.uncertain_words = uncert
-                recognized_lines.append(wl)
-            primary_engine_name = win_lines[0].ocr_engine if win_lines else "fallback"
-
-        # PASS 2 VERIFICATION: If confidence is low, run second pass with illumination normalization
-        avg_initial_conf = (
-            sum(l.confidence for l in recognized_lines) / max(len(recognized_lines), 1)
-            if recognized_lines else 0.0
-        )
-        if recognized_lines and avg_initial_conf < 0.74 and _trocr_engine.is_loaded:
-            logger.info(f"Page {page_number}: Initial confidence low ({avg_initial_conf:.2f}), executing Pass 2 verification.")
-            prep_img2 = _preprocess_handwritten_image(pil_image, variant="illumination")
-            line_regions2 = segment_text_lines(prep_img2)
-            crops2 = [r.image for r in line_regions2]
-            batch_results2 = _trocr_engine.recognize_lines_batch(crops2, batch_size=4)
-
-            # Compare Pass 1 and Pass 2 line-by-line and select highest confidence
-            improved_lines: List[RecognizedLine] = []
-            for idx, (r, (text2, conf2)) in enumerate(zip(line_regions2, batch_results2), start=1):
-                f_conf2, flagged2, uncert2 = _evaluate_line_confidence(text2, conf2)
-                # Find matching line in pass 1
-                pass1_line = recognized_lines[idx - 1] if idx - 1 < len(recognized_lines) else None
-                if pass1_line and pass1_line.confidence >= f_conf2:
-                    improved_lines.append(pass1_line)
-                else:
-                    improved_lines.append(RecognizedLine(
-                        line_number=idx,
-                        text=text2,
-                        confidence=f_conf2,
-                        bbox=r.bbox,
-                        doc_type="handwritten",
-                        ocr_engine="trocr_pass2",
-                        flagged_for_review=flagged2,
-                        uncertain_words=uncert2
-                    ))
-            if improved_lines:
-                recognized_lines = improved_lines
+        # Fallback to legacy implementation if needed
+        return _legacy_recognize_handwritten_image(pil_image, page_number=page_number)
 
     # =================================================================
-    # PATH B: PRINTED DOCUMENT -> PADDLEOCR / WINOCR PIPELINE
+    # PATH B: PRINTED DOCUMENT PIPELINE (PaddleOCR / WinOCR Primary)
     # =================================================================
     else:
         logger.info(f"Page {page_number}: Routing to printed document OCR pipeline.")
+
         prep_img = _preprocess_printed_image(pil_image)
 
-        # 1. Primary: PaddleOCR
-        paddle_text, paddle_lines = _run_paddleocr_sync(prep_img)
+        paddle_text, paddle_lines = _run_paddleocr_sync(prep_img, page_number=page_number)
         if paddle_lines and len(paddle_lines) >= 1:
             primary_engine_name = "paddleocr"
-            for pl in paddle_lines:
-                conf_val, flagged, uncert = _evaluate_line_confidence(pl.text, pl.confidence)
-                pl.confidence = conf_val
-                pl.flagged_for_review = flagged
-                pl.uncertain_words = uncert
-                recognized_lines.append(pl)
+            recognized_lines.extend(paddle_lines)
 
-        # 2. Secondary: Windows WinRT OCR / Tesseract
         if not recognized_lines:
             primary_engine_name = "winocr"
-            win_text, win_lines = _run_winocr_sync(prep_img)
-            if not win_lines or len(win_lines) < 2:
-                win_text, win_lines = _run_winocr_sync(pil_image)
-            for wl in win_lines:
-                conf_val, flagged, uncert = _evaluate_line_confidence(wl.text, wl.confidence)
-                wl.confidence = conf_val
-                wl.flagged_for_review = flagged
-                wl.uncertain_words = uncert
-                wl.doc_type = "scanned_printed"
-                recognized_lines.append(wl)
-            if win_lines:
-                primary_engine_name = win_lines[0].ocr_engine
+            win_text, win_lines = _run_winocr_sync(prep_img, page_number=page_number)
+            if not win_lines:
+                win_text, win_lines = _run_winocr_sync(pil_image, page_number=page_number)
+            recognized_lines.extend(win_lines)
 
-        # PASS 2 VERIFICATION for printed text if confidence is marginal
-        avg_initial_conf = (
-            sum(l.confidence for l in recognized_lines) / max(len(recognized_lines), 1)
-            if recognized_lines else 0.0
-        )
-        if recognized_lines and avg_initial_conf < 0.70:
-            logger.info(f"Page {page_number}: Printed OCR confidence marginal ({avg_initial_conf:.2f}), running Pass 2 with PaddleOCR on raw image.")
-            # Pass 2: Try PaddleOCR on raw (unprocessed) image first
-            raw_text, raw_lines = _run_paddleocr_sync(pil_image)
-            if not raw_lines:
-                # Only fall back to WinOCR if PaddleOCR also fails on raw image
-                raw_text, raw_lines = _run_winocr_sync(pil_image)
-            if raw_lines:
-                raw_conf = sum(l.confidence for l in raw_lines) / len(raw_lines)
-                if raw_conf > avg_initial_conf:
-                    recognized_lines = raw_lines
-                    primary_engine_name = f"{primary_engine_name}_pass2"
-
-    page_struct = _reconstruct_page(recognized_lines, doc_type, page_number, primary_engine_name)
+    page_struct = _reconstruct_page(recognized_lines, doc_type, page_number, primary_engine_name, diagnostics)
     logger.info(
         f"Page {page_number} processed via [{page_struct['ocr_engine']}], "
-        f"lines: {page_struct['line_count']}, avg_conf: {page_struct['avg_confidence']}, "
+        f"lines: {page_struct['line_count']}, avg_rec_score: {page_struct.get('avg_recognition_score', 0.0)}, "
         f"needs_review: {page_struct['needs_review']}"
     )
     return page_struct["text"], page_struct
 
+
 # =====================================================================
-# TEXT CLEANING & CER/WER METRICS
+# STEP 7: GROUND-TRUTH ACCURACY METRICS (CER & WER)
 # =====================================================================
-
-# Valid standalone short words that should NOT be merged with adjacent tokens
-_STANDALONE_SHORT_WORDS = frozenset([
-    "a", "i", "o", "an", "am", "as", "at", "be", "by", "do", "go", "he",
-    "if", "in", "is", "it", "me", "my", "no", "of", "oh", "ok", "on",
-    "or", "so", "to", "up", "us", "we", "vs", "1", "2", "3", "4", "5",
-    "6", "7", "8", "9", "0",
-])
-
-def _merge_split_words(text: str) -> str:
-    """
-    Conservative split-word repair for WinOCR/Tesseract artifacts.
-    Only merges adjacent fragments when one of them is clearly a sub-word fragment
-    (1-2 chars, not a valid standalone word) and the combined result looks plausible.
-    """
-    if not text:
-        return text
-
-    words = text.split(" ")
-    if len(words) < 2:
-        return text
-
-    merged = []
-    i = 0
-    while i < len(words):
-        w = words[i]
-        if not w:
-            i += 1
-            continue
-
-        # Look ahead to merge fragments
-        if i + 1 < len(words):
-            w_next = words[i + 1]
-            if w_next and "\n" not in w and "\n" not in w_next:
-                w_alpha = re.sub(r'[^a-zA-Z]', '', w)
-                wn_alpha = re.sub(r'[^a-zA-Z]', '', w_next)
-
-                # Only merge if at least one fragment is 1-2 alphabetic chars
-                # AND it's NOT a valid standalone word (like "a", "I", "to", "or")
-                should_merge = False
-                if len(w_alpha) > 0 and len(wn_alpha) > 0:
-                    w_is_fragment = len(w_alpha) <= 2 and w_alpha.lower() not in _STANDALONE_SHORT_WORDS
-                    wn_is_fragment = len(wn_alpha) <= 2 and wn_alpha.lower() not in _STANDALONE_SHORT_WORDS
-
-                    if w_is_fragment or wn_is_fragment:
-                        combined = w + w_next
-                        # Verify the merged word has vowels (looks like a real word)
-                        if re.search(r'[aeiouyAEIOUY]', combined):
-                            should_merge = True
-
-                if should_merge:
-                    result = w + w_next
-                    skip = 2
-                    # Try to absorb more 1-2 char fragments
-                    while i + skip < len(words):
-                        nxt = words[i + skip]
-                        nxt_alpha = re.sub(r'[^a-zA-Z]', '', nxt)
-                        if len(nxt_alpha) <= 2 and nxt_alpha.lower() not in _STANDALONE_SHORT_WORDS and len(nxt_alpha) > 0:
-                            result += nxt
-                            skip += 1
-                        else:
-                            break
-                    merged.append(result)
-                    i += skip
-                    continue
-
-        merged.append(w)
-        i += 1
-
-    return " ".join(merged)
-
-def _clean_ocr_text(text: str) -> str:
-    """
-    Post-processes OCR text:
-    - Fixes hyphenated line wraps
-    - Merges split-word OCR artifacts (WinOCR/Tesseract fragmentation)
-    - Normalizes Unicode marks and punctuation
-    - Removes noise characters
-    """
-    if not text:
-        return ""
-
-    # 1. Fix hyphenated line wraps
-    cleaned = re.sub(r"(\b\w+)-\n(\w+\b)", r"\1\2", text)
-    cleaned = re.sub(r"(?<=[a-zA-Z,;:])\n(?=[a-zA-Z])", " ", cleaned)
-
-    # 2. Normalize Unicode
-    cleaned = cleaned.replace("\u201c", '"').replace("\u201d", '"')
-    cleaned = cleaned.replace("\u2018", "'").replace("\u2019", "'")
-    cleaned = cleaned.replace("\u2014", " — ").replace("\u2013", " – ")
-    cleaned = cleaned.replace("\u00b7", " ").replace("\u2022", " ")
-    cleaned = cleaned.replace("\u00a0", " ")
-
-    # 3. Remove stray noise characters
-    cleaned = re.sub(r"(?<!\w)[|\\~`_]{1,2}(?!\w)", " ", cleaned)
-
-    # 4. Fix punctuation spacing
-    cleaned = re.sub(r"\s+([.,!?;:])", r"\1", cleaned)
-    cleaned = re.sub(r"([.,!?;:])(?=[A-Za-z])", r"\1 ", cleaned)
-
-    # 5. Merge split words (fix WinOCR fragmentation)
-    lines = cleaned.split("\n")
-    merged_lines = [_merge_split_words(line) for line in lines]
-    cleaned = "\n".join(merged_lines)
-
-    # 6. Common OCR character/glyph misrecognition repairs
-    ocr_corrections = [
-        (r'\b6110wing\b', 'following'),
-        (r'\b611ow\b', 'follow'),
-        (r'\b611owing\b', 'following'),
-        (r'\bqu&nt\b', 'Student'),
-        (r'\bUrortakhtg\b', 'Undertaking'),
-        (r'\bAca&rnk\b', 'Academic'),
-        (r'\bkactice\b', 'Practice'),
-        (r'\bIrstitute\b', 'Institute'),
-        (r'\bEtivity\b', 'Activity'),
-        (r'\bxknowledged\b', 'acknowledged'),
-        (r'\btoolsmd\b', 'tools and'),
-        (r'\bcontent6r\b', 'content for'),
-        (r'\bacadetnic\b', 'academic'),
-        (r'\bt-ove\b', 'have'),
-        (r'\bassignrnent\b', 'assignment'),
-        (r'\bAl-based\b', 'AI-based'),
-        (r'\bcnly\b', 'only'),
-        (r'\bmore_pouxe\b', 'consume more power'),
-        (r'\bmore pouwce\b', 'more power'),
-        (r'\beocodec\b', 'encoder'),
-        (r'\bEoscope\b', 'Gyroscope'),
-        (r'\bezecoce\b', 'Gyroscope'),
-        (r'\bQcophoPO\b', 'Gyroscope'),
-        (r'\bOdometrey\b', 'odometry'),
-    ]
-    for pattern, replacement in ocr_corrections:
-        cleaned = re.sub(pattern, replacement, cleaned, flags=re.IGNORECASE)
-
-    # 7. Collapse whitespace
-    cleaned = re.sub(r" {2,}", " ", cleaned)
-    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    return cleaned.strip()
 
 def compute_cer(reference: str, hypothesis: str) -> float:
-    """Computes Character Error Rate (CER) using Levenshtein distance."""
-    ref = reference.strip()
-    hyp = hypothesis.strip()
-    if not ref:
-        return 0.0 if not hyp else 1.0
-    r_len, h_len = len(ref), len(hyp)
+    """
+    Computes Character Error Rate (CER) against ground truth reference text.
+    CER = (Substitutions + Deletions + Insertions) / len(reference).
+    This function is strictly for ground-truth benchmark validation.
+    """
+    r_len, h_len = len(reference), len(hypothesis)
+    if r_len == 0:
+        return 0.0 if h_len == 0 else 1.0
+
     dp = [[0] * (h_len + 1) for _ in range(r_len + 1)]
     for i in range(r_len + 1):
         dp[i][0] = i
     for j in range(h_len + 1):
         dp[0][j] = j
+
     for i in range(1, r_len + 1):
         for j in range(1, h_len + 1):
-            cost = 0 if ref[i - 1] == hyp[j - 1] else 1
+            cost = 0 if reference[i - 1] == hypothesis[j - 1] else 1
             dp[i][j] = min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
+
     return round(float(dp[r_len][h_len]) / max(r_len, 1), 4)
 
 def compute_wer(reference: str, hypothesis: str) -> float:
-    """Computes Word Error Rate (WER) using token-level Levenshtein distance."""
+    """
+    Computes Word Error Rate (WER) against ground truth reference text.
+    WER = (Word Substitutions + Deletions + Insertions) / num_ref_words.
+    This function is strictly for ground-truth benchmark validation.
+    """
     r_words = reference.strip().split()
     h_words = hypothesis.strip().split()
-    if not r_words:
-        return 0.0 if not h_words else 1.0
     r_len, h_len = len(r_words), len(h_words)
+
+    if r_len == 0:
+        return 0.0 if h_len == 0 else 1.0
+
     dp = [[0] * (h_len + 1) for _ in range(r_len + 1)]
     for i in range(r_len + 1):
         dp[i][0] = i
     for j in range(h_len + 1):
         dp[0][j] = j
+
     for i in range(1, r_len + 1):
         for j in range(1, h_len + 1):
             cost = 0 if r_words[i - 1] == h_words[j - 1] else 1
             dp[i][j] = min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
+
     return round(float(dp[r_len][h_len]) / max(r_len, 1), 4)
+
 
 # =====================================================================
 # MAIN OCR ENGINE CLASS
@@ -1422,6 +1536,7 @@ class OCREngine:
         if not path.exists():
             return {
                 "extracted_text": "",
+                "raw_text": "",
                 "ocr_engine": "none",
                 "confidence": 0.0,
                 "needs_review": False,
@@ -1447,6 +1562,7 @@ class OCREngine:
             logger.exception(f"Document extraction error on {path}: {e}")
             return {
                 "extracted_text": "",
+                "raw_text": "",
                 "ocr_engine": "error",
                 "confidence": 0.0,
                 "needs_review": False,
@@ -1458,7 +1574,6 @@ class OCREngine:
             }
 
     def _process_pdf(self, path: Path) -> Dict[str, Any]:
-        # 1. Primary engine: PyMuPDF (fitz)
         try:
             res = self._process_pdf_pymupdf(path)
             if res.get("word_count", 0) > 0 or len(res.get("pages", [])) > 0:
@@ -1466,7 +1581,6 @@ class OCREngine:
         except Exception as e:
             logger.warning(f"PyMuPDF failed on {path}, attempting pypdf fallback: {e}")
 
-        # 2. Secondary fallback: pypdf
         try:
             res = self._process_pdf_pypdf(path)
             if res.get("word_count", 0) > 0:
@@ -1474,13 +1588,13 @@ class OCREngine:
         except Exception as e:
             logger.warning(f"pypdf failed on {path}, attempting pdfminer fallback: {e}")
 
-        # 3. Tertiary fallback: pdfminer.six
         try:
             return self._process_pdf_pdfminer(path)
         except Exception as e:
             logger.error(f"All PDF extractors failed on {path}: {e}")
             return {
                 "extracted_text": "",
+                "raw_text": "",
                 "ocr_engine": "none",
                 "confidence": 0.0,
                 "needs_review": False,
@@ -1504,47 +1618,55 @@ class OCREngine:
             page_num = idx + 1
             try:
                 page = doc[idx]
-                # 1. Check for digital selectable text
                 raw_digital = (page.get_text("text", sort=True) or "").strip()
                 doc_type = classify_document_type(digital_text=raw_digital)
 
                 if doc_type == "digital_pdf" and len(raw_digital.split()) >= 5:
                     logger.info(f"Page {page_num}/{num_pages}: Digital text layer extracted directly via PyMuPDF.")
-                    cleaned_digital = _clean_ocr_text(raw_digital)
-                    lines_split = [l.strip() for l in cleaned_digital.split("\n") if l.strip()]
+                    lines_split = [l.strip() for l in raw_digital.split("\n") if l.strip()]
                     page_lines = [
                         {
                             "line_number": i,
+                            "page_number": page_num,
+                            "raw_text": l,
                             "text": l,
+                            "normalized_text": _normalize_for_indexing(l),
+                            "recognition_score": 0.99,
+                            "variant_agreement": 1.0,
+                            "uncertainty_score": 0.01,
                             "confidence": 0.99,
                             "bbox": [0, i * 20, 800, (i + 1) * 20],
+                            "center_y": i * 20 + 10,
                             "doc_type": "digital_pdf",
                             "ocr_engine": "pymupdf_digital",
                             "flagged_for_review": False,
-                            "uncertain_words": []
+                            "uncertain_words": [],
+                            "candidate_details": None
                         }
                         for i, l in enumerate(lines_split, start=1)
                     ]
                     page_dict = {
                         "page_number": page_num,
-                        "text": cleaned_digital,
+                        "text": raw_digital,
+                        "raw_text": raw_digital,
                         "ocr_engine": "pymupdf_digital",
                         "line_count": len(lines_split),
                         "doc_type": "digital_pdf",
+                        "avg_recognition_score": 0.99,
+                        "avg_variant_agreement": 1.0,
                         "avg_confidence": 0.99,
                         "flagged_lines_count": 0,
                         "needs_review": False,
+                        "segmentation_diagnostics": {},
                         "lines": page_lines
                     }
                     pages.append(page_dict)
                     all_lines.extend(page_lines)
                     overall_engines.append("pymupdf_digital")
-                    if cleaned_digital:
-                        full_text.append(cleaned_digital)
+                    if raw_digital:
+                        full_text.append(raw_digital)
                 else:
-                    # Scanned / handwritten / mixed page: render at 150 DPI (fast, still sharp enough for OCR)
-                    pix = page.get_pixmap(dpi=150)
-                    # Zero-copy PIL creation (bypasses slow PNG encoding/decoding)
+                    pix = page.get_pixmap(dpi=300)
                     pil_img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                     _, page_dict = _recognize_image_hybrid(pil_img, page_number=page_num)
                     pages.append(page_dict)
@@ -1557,17 +1679,21 @@ class OCREngine:
                 pages.append({
                     "page_number": page_num,
                     "text": "",
+                    "raw_text": "",
                     "ocr_engine": "failed",
                     "line_count": 0,
                     "doc_type": "unknown",
+                    "avg_recognition_score": 0.0,
+                    "avg_variant_agreement": 0.0,
                     "avg_confidence": 0.0,
                     "flagged_lines_count": 0,
                     "needs_review": True,
+                    "segmentation_diagnostics": {},
                     "lines": [],
                     "error": str(page_err)
                 })
 
-        joined_text = _clean_ocr_text("\n\n".join(full_text))
+        joined_text = "\n\n".join(full_text).strip()
         words = joined_text.split()
         status = "completed" if words else ("partial" if pages else "failed")
 
@@ -1581,6 +1707,7 @@ class OCREngine:
 
         return {
             "extracted_text": joined_text,
+            "raw_text": joined_text,
             "ocr_engine": dominant_engine,
             "confidence": overall_conf,
             "needs_review": needs_review,
@@ -1619,35 +1746,48 @@ class OCREngine:
             page_lines = [
                 {
                     "line_number": i,
+                    "page_number": page_num,
+                    "raw_text": l,
                     "text": l,
+                    "normalized_text": _normalize_for_indexing(l),
+                    "recognition_score": 0.88,
+                    "variant_agreement": 1.0,
+                    "uncertainty_score": 0.12,
                     "confidence": 0.88,
                     "bbox": [0, i * 20, 800, (i + 1) * 20],
+                    "center_y": i * 20 + 10,
                     "doc_type": "digital_pdf",
                     "ocr_engine": "pypdf",
                     "flagged_for_review": False,
-                    "uncertain_words": []
+                    "uncertain_words": [],
+                    "candidate_details": None
                 }
                 for i, l in enumerate(lines, start=1)
             ]
             pages.append({
                 "page_number": page_num,
                 "text": text,
+                "raw_text": text,
                 "ocr_engine": "pypdf",
                 "line_count": len(lines),
                 "doc_type": "digital_pdf",
+                "avg_recognition_score": 0.88,
+                "avg_variant_agreement": 1.0,
                 "avg_confidence": 0.88,
                 "flagged_lines_count": 0,
                 "needs_review": False,
+                "segmentation_diagnostics": {},
                 "lines": page_lines
             })
             all_lines.extend(page_lines)
             if text:
                 full_text.append(text)
 
-        joined_text = "\n\n".join(full_text)
+        joined_text = "\n\n".join(full_text).strip()
         words = joined_text.split()
         return {
             "extracted_text": joined_text,
+            "raw_text": joined_text,
             "ocr_engine": "pypdf",
             "confidence": 0.88,
             "needs_review": False,
@@ -1660,37 +1800,49 @@ class OCREngine:
 
     def _process_pdf_pdfminer(self, path: Path) -> Dict[str, Any]:
         from pdfminer.high_level import extract_text
-        text = extract_text(str(path)) or ""
-        text = text.strip()
+        text = (extract_text(str(path)) or "").strip()
         words = text.split()
         lines = [l.strip() for l in text.split("\n") if l.strip()]
         page_lines = [
             {
                 "line_number": i,
+                "page_number": 1,
+                "raw_text": l,
                 "text": l,
+                "normalized_text": _normalize_for_indexing(l),
+                "recognition_score": 0.90,
+                "variant_agreement": 1.0,
+                "uncertainty_score": 0.10,
                 "confidence": 0.90,
                 "bbox": [0, i * 20, 800, (i + 1) * 20],
+                "center_y": i * 20 + 10,
                 "doc_type": "digital_pdf",
                 "ocr_engine": "pdfminer",
                 "flagged_for_review": False,
-                "uncertain_words": []
+                "uncertain_words": [],
+                "candidate_details": None
             }
             for i, l in enumerate(lines, start=1)
         ]
         return {
             "extracted_text": text,
+            "raw_text": text,
             "ocr_engine": "pdfminer",
             "confidence": 0.90,
             "needs_review": False,
             "pages": [{
                 "page_number": 1,
                 "text": text,
+                "raw_text": text,
                 "ocr_engine": "pdfminer",
                 "line_count": len(lines),
                 "doc_type": "digital_pdf",
+                "avg_recognition_score": 0.90,
+                "avg_variant_agreement": 1.0,
                 "avg_confidence": 0.90,
                 "flagged_lines_count": 0,
                 "needs_review": False,
+                "segmentation_diagnostics": {},
                 "lines": page_lines
             }],
             "lines": page_lines,
@@ -1702,8 +1854,7 @@ class OCREngine:
     def _process_docx(self, path: Path) -> Dict[str, Any]:
         doc = docx.Document(str(path))
         paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-        raw_joined = "\n\n".join(paragraphs)
-        joined_text = _clean_ocr_text(raw_joined)
+        joined_text = "\n\n".join(paragraphs).strip()
         words = joined_text.split()
 
         pages = []
@@ -1722,25 +1873,37 @@ class OCREngine:
                 p_lines = [
                     {
                         "line_number": i,
+                        "page_number": page_num,
+                        "raw_text": l,
                         "text": l,
+                        "normalized_text": _normalize_for_indexing(l),
+                        "recognition_score": 1.0,
+                        "variant_agreement": 1.0,
+                        "uncertainty_score": 0.0,
                         "confidence": 1.0,
                         "bbox": [0, i * 20, 800, (i + 1) * 20],
+                        "center_y": i * 20 + 10,
                         "doc_type": "digital_doc",
                         "ocr_engine": "docx_native",
                         "flagged_for_review": False,
-                        "uncertain_words": []
+                        "uncertain_words": [],
+                        "candidate_details": None
                     }
                     for i, l in enumerate(lines_split, start=1)
                 ]
                 pages.append({
                     "page_number": page_num,
                     "text": p_text,
+                    "raw_text": p_text,
                     "ocr_engine": "docx_native",
                     "line_count": len(lines_split),
                     "doc_type": "digital_doc",
+                    "avg_recognition_score": 1.0,
+                    "avg_variant_agreement": 1.0,
                     "avg_confidence": 1.0,
                     "flagged_lines_count": 0,
                     "needs_review": False,
+                    "segmentation_diagnostics": {},
                     "lines": p_lines
                 })
                 all_lines.extend(p_lines)
@@ -1754,31 +1917,44 @@ class OCREngine:
             p_lines = [
                 {
                     "line_number": i,
+                    "page_number": page_num,
+                    "raw_text": l,
                     "text": l,
+                    "normalized_text": _normalize_for_indexing(l),
+                    "recognition_score": 1.0,
+                    "variant_agreement": 1.0,
+                    "uncertainty_score": 0.0,
                     "confidence": 1.0,
                     "bbox": [0, i * 20, 800, (i + 1) * 20],
+                    "center_y": i * 20 + 10,
                     "doc_type": "digital_doc",
                     "ocr_engine": "docx_native",
                     "flagged_for_review": False,
-                    "uncertain_words": []
+                    "uncertain_words": [],
+                    "candidate_details": None
                 }
                 for i, l in enumerate(lines_split, start=1)
             ]
             pages.append({
                 "page_number": page_num,
                 "text": p_text,
+                "raw_text": p_text,
                 "ocr_engine": "docx_native",
                 "line_count": len(lines_split),
                 "doc_type": "digital_doc",
+                "avg_recognition_score": 1.0,
+                "avg_variant_agreement": 1.0,
                 "avg_confidence": 1.0,
                 "flagged_lines_count": 0,
                 "needs_review": False,
+                "segmentation_diagnostics": {},
                 "lines": p_lines
             })
             all_lines.extend(p_lines)
 
         return {
             "extracted_text": joined_text,
+            "raw_text": joined_text,
             "ocr_engine": "docx_native",
             "confidence": 1.0,
             "needs_review": False,
@@ -1804,37 +1980,50 @@ class OCREngine:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
 
-        content = _clean_ocr_text(content)
+        content = content.strip()
         lines = [l.strip() for l in content.splitlines() if l.strip()]
         words = content.split()
         p_lines = [
             {
                 "line_number": i,
+                "page_number": 1,
+                "raw_text": l,
                 "text": l,
+                "normalized_text": _normalize_for_indexing(l),
+                "recognition_score": 1.0,
+                "variant_agreement": 1.0,
+                "uncertainty_score": 0.0,
                 "confidence": 1.0,
                 "bbox": [0, i * 20, 800, (i + 1) * 20],
+                "center_y": i * 20 + 10,
                 "doc_type": "plain_text",
                 "ocr_engine": "text_native",
                 "flagged_for_review": False,
-                "uncertain_words": []
+                "uncertain_words": [],
+                "candidate_details": None
             }
             for i, l in enumerate(lines, start=1)
         ]
 
         return {
             "extracted_text": content,
+            "raw_text": content,
             "ocr_engine": "text_native",
             "confidence": 1.0,
             "needs_review": False,
             "pages": [{
                 "page_number": 1,
                 "text": content,
+                "raw_text": content,
                 "ocr_engine": "text_native",
                 "line_count": len(lines),
                 "doc_type": "plain_text",
+                "avg_recognition_score": 1.0,
+                "avg_variant_agreement": 1.0,
                 "avg_confidence": 1.0,
                 "flagged_lines_count": 0,
                 "needs_review": False,
+                "segmentation_diagnostics": {},
                 "lines": p_lines
             }],
             "lines": p_lines,
@@ -1848,11 +2037,11 @@ class OCREngine:
         with Image.open(str(path)) as img:
             extracted_text, page_struct = _recognize_image_hybrid(img, page_number=1)
 
-        extracted_text = _clean_ocr_text(extracted_text)
         words = extracted_text.split()
 
         return {
             "extracted_text": extracted_text,
+            "raw_text": page_struct.get("raw_text", extracted_text),
             "ocr_engine": page_struct.get("ocr_engine", "hybrid"),
             "confidence": page_struct.get("avg_confidence", 0.0),
             "needs_review": page_struct.get("needs_review", False),
@@ -1867,6 +2056,3 @@ class OCREngine:
 
 ocr_engine = OCREngine()
 trocr_engine = _trocr_engine
-
-# NOTE: PaddleOCR is initialized lazily on first OCR request via _get_paddle_ocr().
-# Do NOT eagerly init here — PaddlePaddle DLLs conflict with PyTorch on Windows.

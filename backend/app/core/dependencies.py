@@ -1,5 +1,5 @@
-from typing import Generator, List
-from fastapi import Depends, HTTPException, status
+from typing import Generator, List, Optional
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -10,17 +10,19 @@ from backend.app.models.entities import User
 security_scheme = HTTPBearer(auto_error=False)
 
 def get_current_user(
-    auth: HTTPAuthorizationCredentials = Depends(security_scheme),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    token_query: Optional[str] = Query(None, alias="token"),
     db: Session = Depends(get_db)
 ) -> User:
-    if not auth or not auth.credentials:
+    raw_token = auth.credentials if (auth and auth.credentials) else token_query
+    if not raw_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication credentials were not provided",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    payload = decode_access_token(auth.credentials)
+    payload = decode_access_token(raw_token)
     if not payload or "sub" not in payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

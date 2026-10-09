@@ -165,14 +165,14 @@ export default function SubmissionDetail() {
 
   const asPercent = (raw: unknown): number => {
     const n = Number(raw);
-    if (!Number.isFinite(n)) return 0;
-    return n <= 1 && n > 0 ? n * 100 : n;
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.min(100, Math.max(0, n));
   };
   const fmt = (raw: unknown, digits = 1) => asPercent(raw).toFixed(digits);
 
   const aiScoreVal = ai ? asPercent(ai.score) : 0;
   const simScoreVal = simScore != null ? asPercent(simScore) : 0;
-  const hwConfidenceVal = hw ? asPercent(hw.confidence) : 0;
+  const hwConfidenceVal = hw ? (hw.confidence <= 1.0 && hw.confidence > 0 ? hw.confidence * 100 : asPercent(hw.confidence)) : 0;
 
   const docText = ocr?.extracted_text || "No text could be extracted from this document.";
   const detectedSpans: any[] = Array.isArray(ai?.detected_spans) ? ai.detected_spans : [];
@@ -212,35 +212,101 @@ export default function SubmissionDetail() {
     },
   ];
 
+function locateSpanOffsets(
+  fullText: string,
+  rawStart?: number | null,
+  rawEnd?: number | null,
+  snippet?: string | null
+): { start: number; end: number } | null {
+  if (!fullText) return null;
+  const len = fullText.length;
+  const text = snippet?.trim() || "";
+
+  // 1. If start and end are already valid bounds
+  if (
+    rawStart != null &&
+    rawEnd != null &&
+    rawStart >= 0 &&
+    rawEnd > rawStart &&
+    rawEnd <= len
+  ) {
+    if (!text) return { start: rawStart, end: rawEnd };
+    const slice = fullText.substring(rawStart, rawEnd).trim();
+    if (slice === text || slice.toLowerCase() === text.toLowerCase() || slice.includes(text) || text.includes(slice)) {
+      return { start: rawStart, end: rawEnd };
+    }
+  }
+
+  // 2. If text is provided, find its exact character range in fullText
+  if (text.length >= 2) {
+    const exactIdx = fullText.indexOf(text);
+    if (exactIdx !== -1) {
+      return { start: exactIdx, end: exactIdx + text.length };
+    }
+
+    const lowerIdx = fullText.toLowerCase().indexOf(text.toLowerCase());
+    if (lowerIdx !== -1) {
+      return { start: lowerIdx, end: lowerIdx + text.length };
+    }
+
+    const prefix = text.slice(0, Math.min(30, text.length));
+    if (prefix.length >= 6) {
+      const prefixIdx = fullText.toLowerCase().indexOf(prefix.toLowerCase());
+      if (prefixIdx !== -1) {
+        return { start: prefixIdx, end: Math.min(len, prefixIdx + text.length) };
+      }
+    }
+  }
+
+  // 3. Fallback to raw bounds if within range
+  if (rawStart != null && rawEnd != null && rawStart >= 0 && rawEnd > rawStart) {
+    return {
+      start: Math.min(len, Math.max(0, rawStart)),
+      end: Math.min(len, Math.max(rawStart + 1, rawEnd)),
+    };
+  }
+
+  return null;
+}
+
   const similarityMatches: any[] = Array.isArray(analysisData.similarity_matches) ? analysisData.similarity_matches : [];
   const topMatchedStudentName: string = analysisData.top_matched_student_name || "Peer Student";
   const topMatchedSubmissionId: string | null = analysisData.top_matched_submission_id || null;
 
-  // Build unified list of highlights (computed directly without hooks to avoid early-return hook rules violations)
+  // Build unified list of highlights with verified character offsets
   const unifiedHighlights: any[] = [];
+
   detectedSpans.forEach((s, idx) => {
-    unifiedHighlights.push({
-      id: `ai-${idx}`,
-      type: "ai" as const,
-      start: s.start ?? 0,
-      end: s.end ?? ((s.start ?? 0) + (s.text?.length || 0)),
-      text: s.text,
-      confidence: s.confidence ?? 0.85,
-      reason: s.reason || "Artificial stylometric characteristics",
-    });
+    const located = locateSpanOffsets(docText, s.start, s.end, s.text);
+    if (located) {
+      unifiedHighlights.push({
+        id: `ai-${idx}`,
+        type: "ai" as const,
+        start: located.start,
+        end: located.end,
+        text: s.text || docText.substring(located.start, located.end),
+        confidence: s.confidence ?? 0.85,
+        reason: s.reason || "Artificial stylometric characteristics",
+      });
+    }
   });
 
   similarityMatches.forEach((s, idx) => {
-    unifiedHighlights.push({
-      id: `sim-${idx}`,
-      type: "similarity" as const,
-      start: s.start_a ?? 0,
-      end: s.end_a ?? ((s.start_a ?? 0) + (s.text?.length || 0)),
-      text: s.text,
-      confidence: 0.95,
-      reason: `Passage matches peer submission (${s.length} chars)`,
-      peerName: topMatchedStudentName,
-    });
+    const rawStart = s.start_a ?? s.start;
+    const rawEnd = s.end_a ?? s.end;
+    const located = locateSpanOffsets(docText, rawStart, rawEnd, s.text);
+    if (located) {
+      unifiedHighlights.push({
+        id: `sim-${idx}`,
+        type: "similarity" as const,
+        start: located.start,
+        end: located.end,
+        text: s.text || docText.substring(located.start, located.end),
+        confidence: 0.95,
+        reason: `Passage matches peer submission (${s.length || (located.end - located.start)} chars)`,
+        peerName: topMatchedStudentName,
+      });
+    }
   });
 
   const activeHighlights =
@@ -348,9 +414,17 @@ export default function SubmissionDetail() {
             <Btn
               variant="secondary"
               size="sm"
-              onClick={() => window.open(`/api/v1/submissions/${id}/file`, "_blank")}
+              onClick={() => window.open(api.submissions.annotatedPdfUrl(id!), "_blank")}
+              style={{ background: "rgba(14, 165, 233, 0.12)", color: "#38bdf8", borderColor: "rgba(14, 165, 233, 0.35)" }}
             >
-              Download File
+              📑 Highlighted PDF Report
+            </Btn>
+            <Btn
+              variant="secondary"
+              size="sm"
+              onClick={() => window.open(api.submissions.downloadFileUrl(id!), "_blank")}
+            >
+              Raw File
             </Btn>
             <Btn
               variant="danger"

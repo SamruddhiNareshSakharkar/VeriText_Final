@@ -61,13 +61,16 @@ def test_line_segmentation_padding():
     for i, line in enumerate(lines):
         d.text((60, 80 + i * 110), line, fill=(15, 15, 15))
 
-    regions = segment_text_lines(img, min_line_height=18, vertical_pad_ratio=0.30, min_vertical_pad=16)
+    res = segment_text_lines(img, min_line_height=8, vertical_pad_ratio=0.30, min_vertical_pad=16)
+    regions = res[0] if isinstance(res, tuple) else res
     print(f"Extracted {len(regions)} segmented line regions.")
     for idx, r in enumerate(regions):
         bh = r.bbox[3] - r.bbox[1]
         bw = r.bbox[2] - r.bbox[0]
         print(f"  Line {idx+1}: BBox={r.bbox}, Width={bw}px, Height={bh}px (padded)")
         assert bh >= 20, "Line height should include vertical padding"
+
+
 
 def test_quality_gate_confidence():
     print("\n--- Test 3: Quality Gate & Confidence Scoring ---")
