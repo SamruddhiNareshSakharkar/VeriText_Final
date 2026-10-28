@@ -633,6 +633,9 @@ export default function Reports() {
   const [downloading, setDownloading] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ActiveTab>("analytics");
   const [leaderboardSort, setLeaderboardSort] = useState<"risk" | "sim" | "ai" | "name">("risk");
+  const [previewReport, setPreviewReport] = useState<any | null>(null);
+  const [showNewRoster, setShowNewRoster] = useState(false);
+  const [copiedId, setCopiedId] = useState(false);
 
   // Load assignments on mount
   useEffect(() => {
@@ -1428,27 +1431,154 @@ export default function Reports() {
 
               {state === "done" && newReport && (
                 <div
-                  className="rounded-xl p-4 mt-3 animate-fade-in-up"
-                  style={{ background: "var(--color-green-bg)", border: "1px solid var(--color-green-border)" }}
+                  className="rounded-2xl p-5 mt-4 animate-fade-in shadow-md border"
+                  style={{
+                    background: "linear-gradient(145deg, rgba(16, 185, 129, 0.08) 0%, rgba(2, 132, 199, 0.08) 100%)",
+                    borderColor: "rgba(16, 185, 129, 0.35)",
+                  }}
                 >
-                  <p className="font-semibold text-xs" style={{ color: "var(--color-green)" }}>
-                    ✓ Report Generated Successfully
-                  </p>
-                  <p className="text-xs mt-1" style={{ color: "var(--color-text-3)" }}>{newReport.title}</p>
-                  <div className="mt-2.5">
+                  <div className="flex items-start justify-between gap-3 mb-3">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                          <span>✓</span> OFFICIAL AUDIT READY
+                        </span>
+                        <span className="font-mono text-[10px] text-slate-400">
+                          {new Date(newReport.created_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      </div>
+                      <h4 className="font-bold text-sm" style={{ color: "var(--color-text-1)" }}>
+                        {newReport.title}
+                      </h4>
+                      <p className="text-2xs font-mono text-slate-400 mt-0.5">
+                        Type: {newReport.report_type?.replace("_", " ").toUpperCase()} • ID: {String(newReport.id).slice(0, 8)}...
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* 4-Stat Metric Strip */}
+                  {newReport.summary_data && (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 my-3 p-3 rounded-xl bg-slate-900/40 border border-slate-700/50">
+                      <div>
+                        <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-semibold">Compliance</span>
+                        <span className="font-mono font-bold text-sm text-emerald-400">
+                          {newReport.summary_data.compliance_rate ?? 100}%
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-semibold">Avg AI Score</span>
+                        <span className="font-mono font-bold text-sm text-purple-400">
+                          {newReport.summary_data.avg_ai_score ?? 0}%
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-semibold">Peak Sim</span>
+                        <span className="font-mono font-bold text-sm text-amber-400">
+                          {newReport.summary_data.highest_similarity_score ?? 0}%
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] uppercase tracking-wider text-slate-400 block font-semibold">Cohort Grade</span>
+                        <span className="font-mono font-bold text-sm text-sky-400">
+                          {newReport.summary_data.average_grade ?? 0}/{newReport.summary_data.max_marks ?? 100}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
                     <button
                       onClick={() => handleDownload(newReport.id, newReport.title)}
                       disabled={downloading === newReport.id}
-                      className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg text-white transition-colors cursor-pointer"
-                      style={{ background: downloading === newReport.id ? "#6b7280" : "#14904A" }}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold px-4 py-2 rounded-xl text-white transition-all shadow-md cursor-pointer hover:brightness-110 active:scale-95"
+                      style={{ background: downloading === newReport.id ? "#6b7280" : "linear-gradient(135deg, #10b981 0%, #059669 100%)" }}
                     >
                       {downloading === newReport.id ? (
-                        <><Spinner size={12} color="white" /> Downloading…</>
+                        <><Spinner size={13} color="white" /> Downloading PDF…</>
                       ) : (
-                        <>⬇ Download Official PDF</>
+                        <>
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="7 10 12 15 17 10"></polyline>
+                            <line x1="12" y1="15" x2="12" y2="3"></line>
+                          </svg>
+                          Download Official PDF
+                        </>
                       )}
                     </button>
+
+                    {newReport.summary_data?.student_roster && newReport.summary_data.student_roster.length > 0 && (
+                      <button
+                        onClick={() => setShowNewRoster(!showNewRoster)}
+                        className="inline-flex items-center gap-1 text-xs font-semibold px-3 py-2 rounded-xl border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-slate-200 transition-all cursor-pointer"
+                      >
+                        <span>{showNewRoster ? "▲ Hide Roster" : "▼ View Student Roster"}</span>
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(newReport.id);
+                        setCopiedId(true);
+                        setTimeout(() => setCopiedId(false), 2000);
+                      }}
+                      className="inline-flex items-center gap-1 text-2xs font-mono px-2.5 py-2 rounded-xl border border-slate-700 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 transition-all ml-auto"
+                      title="Copy Reference Report UUID"
+                    >
+                      {copiedId ? "✓ Copied" : "📋 Copy ID"}
+                    </button>
                   </div>
+
+                  {/* Expandable Student Roster Table */}
+                  {showNewRoster && newReport.summary_data?.student_roster && (
+                    <div className="mt-4 pt-3 border-t border-slate-700/60 overflow-x-auto animate-fade-in">
+                      <p className="text-2xs uppercase tracking-wider font-bold text-slate-400 mb-2">
+                        Cohort Student Audit Roster ({newReport.summary_data.student_roster.length} students)
+                      </p>
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-700/80 text-[10px] font-semibold uppercase text-slate-400">
+                            <th className="pb-2">Student</th>
+                            <th className="pb-2">File</th>
+                            <th className="pb-2 text-center">AI %</th>
+                            <th className="pb-2 text-center">Sim %</th>
+                            <th className="pb-2 text-center">Grade</th>
+                            <th className="pb-2 text-right">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800 font-mono text-2xs">
+                          {newReport.summary_data.student_roster.map((s: any, sIdx: number) => (
+                            <tr key={sIdx} className="hover:bg-slate-800/40">
+                              <td className="py-2 font-sans font-semibold text-slate-200">{s.student_name}</td>
+                              <td className="py-2 text-slate-400 max-w-[120px] truncate" title={s.file_name}>{s.file_name}</td>
+                              <td className="py-2 text-center">
+                                <span className={`px-1.5 py-0.5 rounded ${s.ai_score >= 50 ? "bg-rose-500/20 text-rose-300 font-bold" : s.ai_score >= 20 ? "bg-purple-500/20 text-purple-300" : "text-slate-400"}`}>
+                                  {s.ai_score}%
+                                </span>
+                              </td>
+                              <td className="py-2 text-center">
+                                <span className={`px-1.5 py-0.5 rounded ${s.similarity_score >= 40 ? "bg-rose-500/20 text-rose-300 font-bold" : s.similarity_score >= 20 ? "bg-amber-500/20 text-amber-300" : "text-slate-400"}`}>
+                                  {s.similarity_score}%
+                                </span>
+                              </td>
+                              <td className="py-2 text-center text-slate-300">
+                                {s.grade != null ? `${s.grade}` : "—"}
+                              </td>
+                              <td className="py-2 text-right">
+                                <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
+                                  s.status === "Verified" ? "bg-emerald-500/20 text-emerald-400" :
+                                  s.status === "Review" ? "bg-amber-500/20 text-amber-400" : "bg-rose-500/20 text-rose-400"
+                                }`}>
+                                  {s.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1491,48 +1621,231 @@ export default function Reports() {
                       className={`p-4 rounded-xl flex items-center justify-between gap-4 transition-all card-hover animate-fade-in-up anim-delay-${Math.min(idx + 1, 6)}`}
                       style={{ background: "var(--color-canvas)", border: "1px solid var(--color-border)" }}
                     >
-                      <div>
-                        <p className="font-semibold text-xs" style={{ color: "var(--color-text-1)" }}>{rep.title}</p>
-                        <div className="flex items-center gap-3 mt-1 font-mono text-[11px]" style={{ color: "var(--color-text-4)" }}>
-                          <span className="capitalize">{rep.report_type.replace("_", " ")}</span>
+                      <div className="min-w-0">
+                        <p className="font-semibold text-xs truncate" style={{ color: "var(--color-text-1)" }}>{rep.title}</p>
+                        <div className="flex items-center gap-2 mt-1 font-mono text-[11px] flex-wrap" style={{ color: "var(--color-text-4)" }}>
+                          <span className="capitalize px-1.5 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px]">
+                            {rep.report_type.replace("_", " ")}
+                          </span>
                           <span>•</span>
-                          <span>{new Date(rep.created_at).toLocaleString()}</span>
+                          <span>{new Date(rep.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</span>
                           {rep.summary_data?.total_submissions !== undefined && (
                             <>
                               <span>•</span>
                               <span>{rep.summary_data.total_submissions} students</span>
                             </>
                           )}
+                          {rep.summary_data?.compliance_rate !== undefined && (
+                            <span className="text-emerald-400 font-bold">
+                              ({rep.summary_data.compliance_rate}% verified)
+                            </span>
+                          )}
                         </div>
                       </div>
 
-                      <button
-                        onClick={() => handleDownload(rep.id, rep.title)}
-                        disabled={downloading === rep.id}
-                        className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 cursor-pointer"
-                        style={{
-                          borderColor: "var(--color-accent-ring)",
-                          color: downloading === rep.id ? "var(--color-text-4)" : "var(--color-accent)",
-                          background: downloading === rep.id ? "var(--color-surface-2)" : "transparent",
-                        }}
-                      >
-                        {downloading === rep.id ? (
-                          <><Spinner size={12} color="var(--color-accent)" /> Downloading…</>
-                        ) : (
-                          <>
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                              <polyline points="7 10 12 15 17 10"></polyline>
-                              <line x1="12" y1="15" x2="12" y2="3"></line>
-                            </svg>
-                            Download PDF
-                          </>
-                        )}
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => setPreviewReport(rep)}
+                          className="text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white transition-all flex items-center gap-1 cursor-pointer"
+                          title="Preview full report summary and student roster"
+                        >
+                          <span>👁️ Preview</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleDownload(rep.id, rep.title)}
+                          disabled={downloading === rep.id}
+                          className="text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 cursor-pointer"
+                          style={{
+                            borderColor: "var(--color-accent-ring)",
+                            color: downloading === rep.id ? "var(--color-text-4)" : "var(--color-accent)",
+                            background: downloading === rep.id ? "var(--color-surface-2)" : "transparent",
+                          }}
+                        >
+                          {downloading === rep.id ? (
+                            <><Spinner size={12} color="var(--color-accent)" /> Downloading…</>
+                          ) : (
+                            <>
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                <polyline points="7 10 12 15 17 10"></polyline>
+                                <line x1="12" y1="15" x2="12" y2="3"></line>
+                              </svg>
+                              PDF
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── INTERACTIVE REPORT PREVIEW MODAL ─── */}
+      {previewReport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
+          <div
+            className="w-full max-w-3xl max-h-[85vh] rounded-2xl flex flex-col overflow-hidden shadow-2xl border border-slate-700/80 animate-scale-in"
+            style={{ background: "var(--color-surface)" }}
+          >
+            {/* Modal Header */}
+            <div className="px-6 py-4 flex items-center justify-between border-b border-slate-700/80 bg-slate-900/60">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-sky-500/20 text-sky-400 border border-sky-500/30 uppercase">
+                    {previewReport.report_type?.replace("_", " ")}
+                  </span>
+                  <span className="text-2xs text-slate-400 font-mono">
+                    ID: {previewReport.id}
+                  </span>
+                </div>
+                <h3 className="font-bold text-base text-slate-100">{previewReport.title}</h3>
+                <p className="text-2xs text-slate-400 mt-0.5">
+                  Generated: {new Date(previewReport.created_at).toLocaleString()}
+                </p>
+              </div>
+              <button
+                onClick={() => setPreviewReport(null)}
+                className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800 transition-all text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto space-y-5">
+              {previewReport.summary_data && (
+                <>
+                  {/* KPI Cards */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="p-3 rounded-xl bg-slate-900/50 border border-slate-700/60">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block">Compliance</span>
+                      <span className="font-mono text-xl font-bold text-emerald-400">
+                        {previewReport.summary_data.compliance_rate ?? 100}%
+                      </span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">Verified authentic</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-900/50 border border-slate-700/60">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block">Avg AI Score</span>
+                      <span className="font-mono text-xl font-bold text-purple-400">
+                        {previewReport.summary_data.avg_ai_score ?? 0}%
+                      </span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">Cohort average</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-900/50 border border-slate-700/60">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block">Peak Similarity</span>
+                      <span className="font-mono text-xl font-bold text-amber-400">
+                        {previewReport.summary_data.highest_similarity_score ?? 0}%
+                      </span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">Highest match</span>
+                    </div>
+                    <div className="p-3 rounded-xl bg-slate-900/50 border border-slate-700/60">
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block">Cohort Grade</span>
+                      <span className="font-mono text-xl font-bold text-sky-400">
+                        {previewReport.summary_data.average_grade ?? 0}/{previewReport.summary_data.max_marks ?? 100}
+                      </span>
+                      <span className="text-[10px] text-slate-400 block mt-0.5">{previewReport.summary_data.graded_count ?? 0} graded</span>
+                    </div>
+                  </div>
+
+                  {/* Student Roster Table */}
+                  <div>
+                    <h4 className="font-bold text-xs uppercase tracking-wider text-slate-300 mb-2 flex items-center justify-between">
+                      <span>Cohort Student Roster</span>
+                      <span className="font-mono text-slate-400 text-2xs">
+                        {previewReport.summary_data.student_roster?.length || 0} students
+                      </span>
+                    </h4>
+
+                    {previewReport.summary_data.student_roster && previewReport.summary_data.student_roster.length > 0 ? (
+                      <div className="border border-slate-700/80 rounded-xl overflow-hidden">
+                        <table className="w-full text-left text-xs">
+                          <thead>
+                            <tr className="bg-slate-900/80 text-[10px] font-semibold uppercase text-slate-400 border-b border-slate-700">
+                              <th className="py-2.5 px-3">Student</th>
+                              <th className="py-2.5 px-3">File</th>
+                              <th className="py-2.5 px-3 text-center">AI %</th>
+                              <th className="py-2.5 px-3 text-center">Sim %</th>
+                              <th className="py-2.5 px-3 text-center">Grade</th>
+                              <th className="py-2.5 px-3 text-right">Integrity Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800 font-mono text-2xs">
+                            {previewReport.summary_data.student_roster.map((s: any, idx: number) => (
+                              <tr key={idx} className="hover:bg-slate-800/40">
+                                <td className="py-2 px-3 font-sans font-semibold text-slate-200">{s.student_name}</td>
+                                <td className="py-2 px-3 text-slate-400 max-w-[140px] truncate" title={s.file_name}>{s.file_name}</td>
+                                <td className="py-2 px-3 text-center">
+                                  <span className={`px-1.5 py-0.5 rounded ${s.ai_score >= 50 ? "bg-rose-500/20 text-rose-300 font-bold" : s.ai_score >= 20 ? "bg-purple-500/20 text-purple-300" : "text-slate-400"}`}>
+                                    {s.ai_score}%
+                                  </span>
+                                </td>
+                                <td className="py-2 px-3 text-center">
+                                  <span className={`px-1.5 py-0.5 rounded ${s.similarity_score >= 40 ? "bg-rose-500/20 text-rose-300 font-bold" : s.similarity_score >= 20 ? "bg-amber-500/20 text-amber-300" : "text-slate-400"}`}>
+                                    {s.similarity_score}%
+                                  </span>
+                                </td>
+                                <td className="py-2 px-3 text-center text-slate-300">
+                                  {s.grade != null ? `${s.grade}` : "—"}
+                                </td>
+                                <td className="py-2 px-3 text-right">
+                                  <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider ${
+                                    s.status === "Verified" ? "bg-emerald-500/20 text-emerald-400" :
+                                    s.status === "Review" ? "bg-amber-500/20 text-amber-400" : "bg-rose-500/20 text-rose-400"
+                                  }`}>
+                                    {s.status}
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-400 italic py-4 text-center">
+                        Student roster data was not captured in this archive entry. Download the full PDF for complete records.
+                      </p>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-4 border-t border-slate-700/80 bg-slate-900/60 flex items-center justify-between">
+              <span className="text-2xs text-slate-400">
+                Official VeriText Audit Report
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPreviewReport(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-all cursor-pointer"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => handleDownload(previewReport.id, previewReport.title)}
+                  disabled={downloading === previewReport.id}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 transition-all shadow-md cursor-pointer"
+                >
+                  {downloading === previewReport.id ? (
+                    <><Spinner size={12} color="white" /> Downloading…</>
+                  ) : (
+                    <>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                      </svg>
+                      Download Full PDF
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>
