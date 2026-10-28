@@ -122,8 +122,8 @@ function ScatterPlot({ submissions }: { submissions: any[] }) {
   const [hovered, setHovered] = useState<any>(null);
   const [tooltipPos, setTooltipPos] = useState({ x: 0, y: 0 });
 
-  const W = 600, H = 320;
-  const pad = { top: 30, right: 30, bottom: 50, left: 55 };
+  const W = 620, H = 330;
+  const pad = { top: 30, right: 35, bottom: 55, left: 70 };
   const pw = W - pad.left - pad.right;
   const ph = H - pad.top - pad.bottom;
 
@@ -151,52 +151,86 @@ function ScatterPlot({ submissions }: { submissions: any[] }) {
       <svg
         ref={svgRef}
         viewBox={`0 0 ${W} ${H}`}
-        className="w-full h-auto"
-        style={{ maxHeight: 340 }}
+        className="w-full h-auto select-none"
+        style={{ maxHeight: 350 }}
       >
-        {/* Grid lines */}
+        {/* Soft plot area background */}
+        <rect
+          x={pad.left}
+          y={pad.top}
+          width={pw}
+          height={ph}
+          fill="rgba(241, 245, 249, 0.4)"
+          rx="6"
+        />
+
+        {/* Grid lines and Ticks */}
         {[0, 25, 50, 75, 100].map((v) => (
           <g key={`grid-${v}`}>
+            {/* Horizontal Gridline */}
             <line
               x1={pad.left}
               y1={pad.top + ph - (v / 100) * ph}
               x2={pad.left + pw}
               y2={pad.top + ph - (v / 100) * ph}
-              stroke="var(--color-border)"
-              strokeWidth="0.5"
+              stroke="#cbd5e1"
+              strokeWidth="1"
               strokeDasharray="4 4"
             />
+            {/* Y Tick Label */}
             <text
-              x={pad.left - 8}
+              x={pad.left - 10}
               y={pad.top + ph - (v / 100) * ph + 4}
               textAnchor="end"
-              fontSize="10"
-              fill="var(--color-text-4)"
-              fontFamily="var(--font-mono)"
+              fontSize="11"
+              fontWeight="700"
+              fill="#334155"
+              fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
             >
               {v}%
             </text>
+            {/* Vertical Gridline */}
             <line
               x1={pad.left + (v / 100) * pw}
               y1={pad.top}
               x2={pad.left + (v / 100) * pw}
               y2={pad.top + ph}
-              stroke="var(--color-border)"
-              strokeWidth="0.5"
+              stroke="#cbd5e1"
+              strokeWidth="1"
               strokeDasharray="4 4"
             />
+            {/* X Tick Label */}
             <text
               x={pad.left + (v / 100) * pw}
-              y={H - pad.bottom + 18}
+              y={pad.top + ph + 18}
               textAnchor="middle"
-              fontSize="10"
-              fill="var(--color-text-4)"
-              fontFamily="var(--font-mono)"
+              fontSize="11"
+              fontWeight="700"
+              fill="#334155"
+              fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
             >
               {v}%
             </text>
           </g>
         ))}
+
+        {/* Solid X and Y Axis lines */}
+        <line
+          x1={pad.left}
+          y1={pad.top}
+          x2={pad.left}
+          y2={pad.top + ph}
+          stroke="#64748b"
+          strokeWidth="1.5"
+        />
+        <line
+          x1={pad.left}
+          y1={pad.top + ph}
+          x2={pad.left + pw}
+          y2={pad.top + ph}
+          stroke="#64748b"
+          strokeWidth="1.5"
+        />
 
         {/* Danger zone rectangle */}
         <rect
@@ -204,42 +238,48 @@ function ScatterPlot({ submissions }: { submissions: any[] }) {
           y={pad.top}
           width={(50 / 100) * pw}
           height={(50 / 100) * ph}
-          fill="rgba(239, 68, 68, 0.06)"
+          fill="rgba(239, 68, 68, 0.08)"
+          stroke="rgba(239, 68, 68, 0.35)"
+          strokeWidth="1"
+          strokeDasharray="4 4"
           rx="4"
         />
         <text
           x={pad.left + (75 / 100) * pw}
-          y={pad.top + 16}
+          y={pad.top + 18}
           textAnchor="middle"
-          fontSize="9"
-          fill="rgba(239, 68, 68, 0.4)"
-          fontFamily="var(--font-sans)"
-          fontWeight="600"
+          fontSize="10"
+          fill="#dc2626"
+          fontFamily="system-ui, -apple-system, sans-serif"
+          fontWeight="700"
+          letterSpacing="0.04em"
         >
-          ⚠ HIGH RISK ZONE
+          ⚠ HIGH RISK ZONE (&gt;50%)
         </text>
 
         {/* Axis labels */}
         <text
           x={pad.left + pw / 2}
-          y={H - 6}
+          y={H - 10}
           textAnchor="middle"
-          fontSize="11"
-          fill="var(--color-text-3)"
-          fontFamily="var(--font-sans)"
-          fontWeight="600"
+          fontSize="12"
+          fill="#0f172a"
+          fontFamily="system-ui, -apple-system, sans-serif"
+          fontWeight="700"
+          letterSpacing="0.02em"
         >
           Peer Similarity Score →
         </text>
         <text
-          x={14}
+          x={20}
           y={pad.top + ph / 2}
           textAnchor="middle"
-          fontSize="11"
-          fill="var(--color-text-3)"
-          fontFamily="var(--font-sans)"
-          fontWeight="600"
-          transform={`rotate(-90, 14, ${pad.top + ph / 2})`}
+          fontSize="12"
+          fill="#0f172a"
+          fontFamily="system-ui, -apple-system, sans-serif"
+          fontWeight="700"
+          letterSpacing="0.02em"
+          transform={`rotate(-90, 20, ${pad.top + ph / 2})`}
         >
           AI Probability →
         </text>
@@ -253,15 +293,15 @@ function ScatterPlot({ submissions }: { submissions: any[] }) {
               <circle
                 cx={cx}
                 cy={cy}
-                r={hovered?.id === p.id ? 8 : 5.5}
+                r={hovered?.id === p.id ? 8 : 6}
                 fill={getColor(p.sim, p.ai)}
-                opacity={hovered && hovered.id !== p.id ? 0.3 : 0.85}
-                stroke="white"
-                strokeWidth="1.5"
+                opacity={hovered && hovered.id !== p.id ? 0.35 : 0.95}
+                stroke="#ffffff"
+                strokeWidth="2"
                 style={{
-                  transition: "all 0.25s ease",
+                  transition: "all 0.2s ease",
                   cursor: "pointer",
-                  filter: hovered?.id === p.id ? `drop-shadow(0 0 6px ${getColor(p.sim, p.ai)})` : "none",
+                  filter: hovered?.id === p.id ? `drop-shadow(0 0 8px ${getColor(p.sim, p.ai)})` : "drop-shadow(0 1px 3px rgba(0,0,0,0.2))",
                 }}
                 onMouseEnter={(e) => {
                   setHovered(p);
@@ -998,27 +1038,26 @@ export default function Reports() {
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
             {/* Scatter Plot (3 cols) */}
             <div
-              className="lg:col-span-3 p-5 rounded-2xl shadow-sm border"
-              style={{ background: "var(--color-surface)", borderColor: "var(--color-border)" }}
+              className="lg:col-span-3 p-5 rounded-2xl shadow-sm border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800"
             >
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: "var(--color-text-1)" }}>
+                  <h3 className="font-bold text-sm flex items-center gap-2 text-slate-900 dark:text-slate-100">
                     <span>🎯</span> Integrity Scatter Analysis
                   </h3>
-                  <p className="text-[11px] mt-0.5" style={{ color: "var(--color-text-4)" }}>
+                  <p className="text-xs mt-0.5 text-slate-500 dark:text-slate-400">
                     Each dot = one student. Hover to inspect. Top-right = high risk.
                   </p>
                 </div>
-                <div className="flex items-center gap-3 text-[10px]">
-                  <span className="flex items-center gap-1">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Clean
+                <div className="flex items-center gap-3 text-xs font-semibold">
+                  <span className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                    <span className="w-3 h-3 rounded-full bg-emerald-500 shadow-sm" /> Clean
                   </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-500" /> Review
+                  <span className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                    <span className="w-3 h-3 rounded-full bg-amber-500 shadow-sm" /> Review
                   </span>
-                  <span className="flex items-center gap-1">
-                    <span className="w-2.5 h-2.5 rounded-full bg-red-500" /> Flagged
+                  <span className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                    <span className="w-3 h-3 rounded-full bg-red-500 shadow-sm" /> Flagged
                   </span>
                 </div>
               </div>
@@ -1027,10 +1066,9 @@ export default function Reports() {
 
             {/* Risk Donut (2 cols) */}
             <div
-              className="lg:col-span-2 p-5 rounded-2xl shadow-sm border flex flex-col"
-              style={{ background: "var(--color-surface)", borderColor: "var(--color-border)" }}
+              className="lg:col-span-2 p-5 rounded-2xl shadow-sm border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800 flex flex-col justify-between"
             >
-              <h3 className="font-bold text-sm flex items-center gap-2 mb-4" style={{ color: "var(--color-text-1)" }}>
+              <h3 className="font-bold text-sm flex items-center gap-2 text-slate-900 dark:text-slate-100 mb-2">
                 <span>📊</span> Risk Breakdown
               </h3>
 
@@ -1047,9 +1085,9 @@ export default function Reports() {
                 const flagDash = flagPct * donutCirc;
 
                 return (
-                  <div className="flex items-center justify-center my-4 relative">
+                  <div className="flex items-center justify-center my-3 relative">
                     <svg width="150" height="150" viewBox="0 0 150 150">
-                      <circle cx="75" cy="75" r={donutR} fill="none" stroke="var(--color-border)" strokeWidth="16" />
+                      <circle cx="75" cy="75" r={donutR} fill="none" stroke="#e2e8f0" strokeWidth="16" />
                       {cleanDash > 0 && (
                         <circle cx="75" cy="75" r={donutR} fill="none" stroke="#10b981" strokeWidth="16"
                           strokeDasharray={`${cleanDash} ${donutCirc}`} strokeDashoffset="0"
@@ -1070,10 +1108,10 @@ export default function Reports() {
                       )}
                     </svg>
                     <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
-                      <span className="font-mono text-xl font-bold" style={{ color: "var(--color-text-1)" }}>
+                      <span className="font-mono text-2xl font-black text-slate-900 dark:text-slate-100 tracking-tight">
                         {analytics.complianceRate}%
                       </span>
-                      <span className="text-[9.5px] uppercase tracking-wider font-semibold" style={{ color: "var(--color-text-3)" }}>
+                      <span className="text-[10px] uppercase tracking-wider font-bold text-slate-500 dark:text-slate-400">
                         Authentic
                       </span>
                     </div>
@@ -1082,20 +1120,25 @@ export default function Reports() {
               })()}
 
               {/* Legend */}
-              <div className="space-y-2 mt-auto pt-3 border-t" style={{ borderColor: "var(--color-border)" }}>
+              <div className="space-y-2 mt-auto pt-3 border-t border-slate-200 dark:border-slate-800">
                 {[
                   { label: "Clean / Verified (<25%)", color: "#10b981", count: analytics.riskClean, pct: analytics.total ? Math.round((analytics.riskClean / analytics.total) * 100) : 0 },
                   { label: "Moderate Review (25–50%)", color: "#f59e0b", count: analytics.riskReview, pct: analytics.total ? Math.round((analytics.riskReview / analytics.total) * 100) : 0 },
                   { label: "High Risk Flag (>50%)", color: "#ef4444", count: analytics.riskFlagged, pct: analytics.total ? Math.round((analytics.riskFlagged / analytics.total) * 100) : 0 },
                 ].map((item) => (
-                  <div key={item.label} className="flex items-center justify-between text-xs">
+                  <div key={item.label} className="flex items-center justify-between text-xs py-1.5 px-2 rounded-lg bg-slate-50/80 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
                     <div className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: item.color }} />
-                      <span style={{ color: "var(--color-text-2)" }}>{item.label}</span>
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ background: item.color }} />
+                      <span className="font-medium text-slate-700 dark:text-slate-200">{item.label}</span>
                     </div>
-                    <span className="font-mono font-bold" style={{ color: item.color === "#ef4444" ? "var(--color-red)" : "var(--color-text-1)" }}>
-                      {item.count} ({item.pct}%)
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-bold text-xs text-slate-900 dark:text-slate-100 bg-white dark:bg-slate-700 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-600">
+                        {item.count}
+                      </span>
+                      <span className="font-mono text-[11px] font-semibold text-slate-500 dark:text-slate-400 min-w-[40px] text-right">
+                        ({item.pct}%)
+                      </span>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1104,136 +1147,150 @@ export default function Reports() {
 
           {/* Histogram */}
           <div
-            className="p-5 rounded-2xl shadow-sm border"
-            style={{ background: "var(--color-surface)", borderColor: "var(--color-border)" }}
+            className="p-5 rounded-2xl shadow-sm border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800"
           >
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: "var(--color-text-1)" }}>
+                <h3 className="font-bold text-sm flex items-center gap-2 text-slate-900 dark:text-slate-100">
                   <span>📈</span> Score Distribution Histogram
                 </h3>
-                <p className="text-[11px] mt-0.5" style={{ color: "var(--color-text-4)" }}>
+                <p className="text-xs mt-0.5 text-slate-500 dark:text-slate-400">
                   Frequency of students across similarity and AI score bands
                 </p>
               </div>
-              <div className="flex items-center gap-3 text-xs">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded bg-blue-500" />
-                  <span style={{ color: "var(--color-text-3)" }}>Peer Similarity</span>
+              <div className="flex items-center gap-4 text-xs font-semibold">
+                <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                  <span className="w-3.5 h-3.5 rounded bg-blue-500 shadow-sm" />
+                  <span>Peer Similarity</span>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded bg-purple-500" />
-                  <span style={{ color: "var(--color-text-3)" }}>AI Probability</span>
+                <div className="flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                  <span className="w-3.5 h-3.5 rounded bg-purple-500 shadow-sm" />
+                  <span>AI Probability</span>
                 </div>
               </div>
             </div>
 
-            <div className="h-48 w-full pt-4 flex items-end justify-between gap-3 px-2 border-b" style={{ borderColor: "var(--color-border)" }}>
-              {["0–20%", "21–40%", "41–60%", "61–80%", "81–100%"].map((band, i) => {
-                const simCount = analytics.simHistogram[i];
-                const aiCount = analytics.aiHistogram[i];
-                const simH = Math.max(8, (simCount / maxHistCount) * 140);
-                const aiH = Math.max(8, (aiCount / maxHistCount) * 140);
+            {/* Chart Area */}
+            <div className="pt-4">
+              <div className="h-44 w-full flex items-end justify-between gap-3 px-4">
+                {["0–20%", "21–40%", "41–60%", "61–80%", "81–100%"].map((band, i) => {
+                  const simCount = analytics.simHistogram[i] || 0;
+                  const aiCount = analytics.aiHistogram[i] || 0;
+                  const simH = maxHistCount > 0 ? (simCount / maxHistCount) * 140 : 0;
+                  const aiH = maxHistCount > 0 ? (aiCount / maxHistCount) * 140 : 0;
 
-                return (
-                  <div key={band} className="flex-1 flex flex-col items-center h-full justify-end group">
-                    <div className="flex items-end gap-1.5 w-full justify-center">
-                      <div
-                        className="w-4 sm:w-6 rounded-t-md transition-all duration-500 hover:brightness-110 relative flex items-center justify-center text-[9px] font-mono text-white font-bold pb-1"
-                        style={{
-                          height: `${simH}px`,
-                          background: i >= 3 ? "linear-gradient(to top, #3b82f6, #60a5fa)" : "#3b82f6",
-                        }}
-                        title={`${band} Peer Similarity: ${simCount} students`}
-                      >
-                        {simCount > 0 && <span className="opacity-90">{simCount}</span>}
-                      </div>
-                      <div
-                        className="w-4 sm:w-6 rounded-t-md transition-all duration-500 hover:brightness-110 relative flex items-center justify-center text-[9px] font-mono text-white font-bold pb-1"
-                        style={{
-                          height: `${aiH}px`,
-                          background: i >= 3 ? "linear-gradient(to top, #a855f7, #c084fc)" : "#a855f7",
-                        }}
-                        title={`${band} AI Probability: ${aiCount} students`}
-                      >
-                        {aiCount > 0 && <span className="opacity-90">{aiCount}</span>}
+                  return (
+                    <div key={band} className="flex-1 flex flex-col items-center justify-end h-full group">
+                      <div className="flex items-end gap-2 w-full justify-center">
+                        {/* Peer Similarity Bar */}
+                        <div
+                          className={`w-6 sm:w-8 rounded-t-md transition-all duration-300 flex items-center justify-center text-[10px] font-mono text-white font-bold shadow-sm ${
+                            simCount > 0 ? "hover:brightness-110" : "bg-slate-100 dark:bg-slate-800"
+                          }`}
+                          style={{
+                            height: `${Math.max(6, simH)}px`,
+                            background: simCount > 0 ? (i >= 3 ? "linear-gradient(to top, #2563eb, #60a5fa)" : "#3b82f6") : undefined,
+                          }}
+                          title={`${band} Peer Similarity: ${simCount} students`}
+                        >
+                          {simCount > 0 && <span className="drop-shadow-sm">{simCount}</span>}
+                        </div>
+
+                        {/* AI Probability Bar */}
+                        <div
+                          className={`w-6 sm:w-8 rounded-t-md transition-all duration-300 flex items-center justify-center text-[10px] font-mono text-white font-bold shadow-sm ${
+                            aiCount > 0 ? "hover:brightness-110" : "bg-slate-100 dark:bg-slate-800"
+                          }`}
+                          style={{
+                            height: `${Math.max(6, aiH)}px`,
+                            background: aiCount > 0 ? (i >= 3 ? "linear-gradient(to top, #7e22ce, #c084fc)" : "#a855f7") : undefined,
+                          }}
+                          title={`${band} AI Probability: ${aiCount} students`}
+                        >
+                          {aiCount > 0 && <span className="drop-shadow-sm">{aiCount}</span>}
+                        </div>
                       </div>
                     </div>
-                    <span className="text-[10px] font-mono mt-2 truncate max-w-full" style={{ color: "var(--color-text-4)" }}>
+                  );
+                })}
+              </div>
+
+              {/* Solid X-Axis Baseline Rule */}
+              <div className="w-full h-[2px] bg-slate-300 dark:bg-slate-700" />
+
+              {/* Dedicated X-Axis Labels Row */}
+              <div className="w-full flex justify-between gap-3 px-4 pt-2.5 pb-1">
+                {["0–20%", "21–40%", "41–60%", "61–80%", "81–100%"].map((band) => (
+                  <div key={band} className="flex-1 text-center">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-mono">
                       {band}
                     </span>
                   </div>
-                );
-              })}
+                ))}
+              </div>
             </div>
           </div>
 
           {/* Flagged Submissions Watchlist */}
           <div
-            className="p-5 rounded-2xl shadow-sm border"
-            style={{ background: "var(--color-surface)", borderColor: "var(--color-border)" }}
+            className="p-5 rounded-2xl shadow-sm border bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800"
           >
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h3 className="font-bold text-sm flex items-center gap-2" style={{ color: "var(--color-text-1)" }}>
+                <h3 className="font-bold text-sm flex items-center gap-2 text-slate-900 dark:text-slate-100">
                   <span>⚠️</span> Flagged Submissions Requiring Faculty Attention
                 </h3>
-                <p className="text-[11px] mt-0.5" style={{ color: "var(--color-text-4)" }}>
+                <p className="text-xs mt-0.5 text-slate-500 dark:text-slate-400">
                   Submissions with &gt;50% match score or detected handwriting/AI stylometry flags
                 </p>
               </div>
               <span
-                className="font-mono text-xs px-2.5 py-1 rounded-full font-bold"
-                style={{
-                  background: analytics.flaggedList.length > 0 ? "var(--color-red-bg)" : "var(--color-green-bg)",
-                  color: analytics.flaggedList.length > 0 ? "var(--color-red)" : "var(--color-green)",
-                  border: `1px solid ${analytics.flaggedList.length > 0 ? "var(--color-red-border)" : "var(--color-green-border)"}`,
-                }}
+                className={`font-mono text-xs px-3 py-1 rounded-full font-bold shadow-sm ${
+                  analytics.flaggedList.length > 0
+                    ? "bg-red-100 text-red-700 border border-red-300 dark:bg-red-950/60 dark:text-red-300 dark:border-red-800"
+                    : "bg-emerald-100 text-emerald-800 border border-emerald-300 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800"
+                }`}
               >
                 {analytics.flaggedList.length} Flagged
               </span>
             </div>
 
             {analytics.flaggedList.length === 0 ? (
-              <div
-                className="py-8 text-center rounded-xl border border-dashed text-xs"
-                style={{
-                  borderColor: "var(--color-green-border)",
-                  background: "var(--color-green-bg)",
-                  color: "var(--color-green)",
-                }}
-              >
-                ✓ All submissions in this cohort meet academic originality thresholds (&lt;50% similarity).
+              <div className="py-6 px-4 text-center rounded-xl border-2 border-emerald-300 dark:border-emerald-700/60 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200 text-xs sm:text-sm font-semibold flex items-center justify-center gap-2.5 shadow-sm">
+                <svg className="w-5 h-5 text-emerald-600 dark:text-emerald-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>All submissions in this cohort meet academic originality thresholds (&lt;50% similarity).</span>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead>
-                    <tr className="border-b text-[10px] font-semibold uppercase" style={{ borderColor: "var(--color-border)", color: "var(--color-text-4)" }}>
-                      <th className="pb-2.5">Student</th>
-                      <th className="pb-2.5">Similarity</th>
-                      <th className="pb-2.5">AI Probability</th>
-                      <th className="pb-2.5">Flag Reason</th>
-                      <th className="pb-2.5 text-right">Audit</th>
+                    <tr className="border-b text-[11px] font-bold uppercase tracking-wider text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800">
+                      <th className="pb-3">Student</th>
+                      <th className="pb-3">Similarity</th>
+                      <th className="pb-3">AI Probability</th>
+                      <th className="pb-3">Flag Reason</th>
+                      <th className="pb-3 text-right">Audit</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y" style={{ borderColor: "var(--color-border)" }}>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                     {analytics.flaggedList.map((item) => (
-                      <tr key={item.id} className="hover:bg-stone-50/50 dark:hover:bg-stone-800/50">
-                        <td className="py-3 font-semibold" style={{ color: "var(--color-text-1)" }}>{item.name}</td>
+                      <tr key={item.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/50 transition-colors">
+                        <td className="py-3 font-semibold text-slate-900 dark:text-slate-100">{item.name}</td>
                         <td className="py-3 font-mono">
-                          <span className={`px-2 py-0.5 rounded font-bold ${item.sim > 50 ? "bg-red-100 text-red-800" : "text-stone-600"}`}>
+                          <span className={`px-2 py-0.5 rounded font-bold ${item.sim > 50 ? "bg-red-100 text-red-800 dark:bg-red-950/60 dark:text-red-300" : "text-slate-600 dark:text-slate-400"}`}>
                             {item.sim}%
                           </span>
                         </td>
                         <td className="py-3 font-mono">
-                          <span className={`px-2 py-0.5 rounded font-bold ${item.ai > 50 ? "bg-purple-100 text-purple-800" : "text-stone-600"}`}>
+                          <span className={`px-2 py-0.5 rounded font-bold ${item.ai > 50 ? "bg-purple-100 text-purple-800 dark:bg-purple-950/60 dark:text-purple-300" : "text-slate-600 dark:text-slate-400"}`}>
                             {item.ai}%
                           </span>
                         </td>
-                        <td className="py-3 font-medium" style={{ color: "var(--color-text-3)" }}>{item.flag}</td>
+                        <td className="py-3 font-medium text-slate-600 dark:text-slate-400">{item.flag}</td>
                         <td className="py-3 text-right">
-                          <a href={`/teacher/submissions/${item.id}`} className="font-semibold hover:underline" style={{ color: "var(--color-accent)" }}>
+                          <a href={`/teacher/submissions/${item.id}`} className="font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400 hover:underline">
                             Inspect →
                           </a>
                         </td>
