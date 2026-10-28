@@ -89,7 +89,9 @@ class RobertaAIDetector:
             "foster", "fostering", "intricate", "intricacies", "bolster", "bolstering",
             "streamline", "streamlining", "spearhead", "spearheading", "navigating",
             "revolutionize", "revolutionizing", "resilience", "resilient", "meticulous",
-            "meticulously", "underpin", "underpins", "underpinning", "salient", "crucial"
+            "meticulously", "underpin", "underpins", "underpinning", "salient", "crucial",
+            "empower", "empowers", "empowering", "seamless", "orchestrate", "orchestrating",
+            "resonate", "resonates", "resonating", "invaluable", "exponential", "exponentially"
         }
 
         # Academic & Generative vocabulary
@@ -101,19 +103,20 @@ class RobertaAIDetector:
             "optimize", "optimizing", "optimization", "scalable", "scalability",
             "methodology", "methodologies", "systematic", "encompasses", "encompassing",
             "pervasive", "robust", "cohesive", "elucidate", "elucidating", "promising",
-            "unravel", "unraveling", "exponential", "ecosystem", "trajectory",
+            "unravel", "unraveling", "ecosystem", "trajectory", "bedrock",
             "recapitulate", "ultimately", "utilize", "utilizes", "utilizing", "utilization",
             "implement", "implements", "implementing", "implementation", "demonstrate",
             "demonstrates", "demonstrating", "framework", "architecture", "mechanism",
             "mechanisms", "incorporate", "incorporates", "incorporating", "distinguish",
             "distinguishes", "distinguishing", "synthesize", "synthesizing", "subsequent",
             "underlying", "comprehensive", "effective", "effectively", "efficient",
-            "efficiently", "efficiency", "structure", "structured", "capability",
+            "efficiently", "efficiency", "structure", "structures", "structured", "capability",
             "capabilities", "performance", "configuration", "categorization", "classification",
             "accurate", "accurately", "accuracy", "overview", "highlight", "highlights",
             "highlighting", "essential", "reliability", "reliable", "techniques", "approaches",
             "localization", "verification", "evaluation", "formulations", "ablation", "safeguards",
-            "adoption", "conventional", "nuances", "scrutiny", "mitigate", "formulation"
+            "adoption", "conventional", "nuances", "scrutiny", "mitigate", "formulation",
+            "sequentially", "hierarchical", "hierarchically", "networked", "logarithmic"
         }
 
         # Characteristic AI transition patterns & templates
@@ -147,7 +150,7 @@ class RobertaAIDetector:
             (2.2, re.compile(r"\bhas (emerged|grown) as a (key|powerful|major|prominent)\b", re.IGNORECASE), "LLM narrative trope: 'has emerged as a key...'"),
             (2.2, re.compile(r"\bpaves the way for\b", re.IGNORECASE), "AI idiom: 'paves the way for'"),
             (2.0, re.compile(r"\bkey (aspects|takeaways|components|elements) of\b", re.IGNORECASE), "AI structural marker: 'key aspects of'"),
-            (2.2, re.compile(r"\bform(s)? the foundational bedrock\b", re.IGNORECASE), "AI trope: 'foundational bedrock'"),
+            (2.5, re.compile(r"\bform(s)? the foundational bedrock\b", re.IGNORECASE), "AI trope: 'foundational bedrock'"),
             (2.2, re.compile(r"\b(offers|provides) a (promising|compelling|unique) solution\b", re.IGNORECASE), "AI evaluative phrasing"),
             (2.2, re.compile(r"\bfrom .*? to .*?, (the|this|these|such)\b", re.IGNORECASE), "AI range-enumeration cadence"),
             (2.0, re.compile(r"\bcan be defined as\b", re.IGNORECASE), "Textbook expository definition"),
@@ -157,7 +160,22 @@ class RobertaAIDetector:
             (2.2, re.compile(r"\bbridges (those|these|the) gaps?\b", re.IGNORECASE), "Generative bridging idiom"),
             (2.2, re.compile(r"\bgiving teachers clear evidence\b", re.IGNORECASE), "Generative pedagogy trope"),
             (2.0, re.compile(r"\bthe rest of this paper is structured as\b", re.IGNORECASE), "Formulaic paper structure sentence"),
-            (2.0, re.compile(r"\bhere are the key contributions\b", re.IGNORECASE), "Formulaic contribution list opening")
+            (2.0, re.compile(r"\bhere are the key contributions\b", re.IGNORECASE), "Formulaic contribution list opening"),
+            # Advanced structural & algorithmic comparative templates
+            (2.6, re.compile(r"\bin contrast,?\s+([a-z]+|non-linear|linear)\s+(structures|models|systems|algorithms|approaches)\b", re.IGNORECASE), "AI comparative transition: 'in contrast...'"),
+            (2.4, re.compile(r"\borganize(s)?\s+elements\s+(sequentially|hierarchically|dynamically)\b", re.IGNORECASE), "Formulaic definition: 'organizes elements...'"),
+            (2.4, re.compile(r"\bmodel(s)?\s+(hierarchical|networked|relational|complex)\s+relationships\b", re.IGNORECASE), "Formulaic definition: 'models relationships'"),
+            (2.6, re.compile(r"\benable(s)?\s+(logarithmic|exponential|linear|polynomial|optimal)\s+(time|space)?\s*(complexity|efficiency|performance|search)\b", re.IGNORECASE), "Formulaic algorithmic complexity formula"),
+            (2.2, re.compile(r"\bunder (balanced|optimal|ideal|normal|certain|varying) conditions\b", re.IGNORECASE), "Formulaic qualification trope"),
+            (2.6, re.compile(r"\bempowers?\s+(developers|engineers|users|researchers|organizations|students)\s+to\s+(design|build|create|optimize|develop|solve)\b", re.IGNORECASE), "Classic LLM empowerment trope: 'empowers developers to...'"),
+            (2.4, re.compile(r"\bis\s+(vital|essential|crucial|paramount|indispensable)\s+for\s+(software|system|computational|academic)\s+(performance|engineering|development|efficiency)\b", re.IGNORECASE), "Formulaic evaluative assertion"),
+            (2.4, re.compile(r"\ba thorough understanding of\s+[a-z\s]+\s+empowers\b", re.IGNORECASE), "Classic LLM concluding trope"),
+            (2.4, re.compile(r"\bby leveraging (the|adaptive|advanced|cutting-edge|modern|generative|novel|massive)\b", re.IGNORECASE), "Signature AI instrumental clause"),
+            (2.4, re.compile(r"\b(foster|fosters|fostering)\s+(a |an )?(heightened|deeper|collaborative|meaningful)\b", re.IGNORECASE), "LLM affective buzzword trope"),
+            (2.4, re.compile(r"\bpersonalized\s+(instructional|learning)\s+pathways\b", re.IGNORECASE), "Generative educational jargon"),
+            (2.4, re.compile(r"\bbalance(s)?\s+innovation\s+with\s+(ethical|regulatory|social)\s+responsibility\b", re.IGNORECASE), "Classic LLM ethical concluding trope"),
+            (2.4, re.compile(r"\bserve(s)?\s+the\s+collective\s+benefit\s+of\b", re.IGNORECASE), "Altruistic LLM closing trope"),
+            (2.5, re.compile(r"\b(marks|represents|signifies)\s+a\s+(significant|pivotal|crucial|major)\s+(milestone|step|shift|leap)\b", re.IGNORECASE), "LLM milestone trope")
         ]
 
     def _words(self, text: str) -> List[str]:
@@ -174,7 +192,8 @@ class RobertaAIDetector:
             return []
 
         spans: List[Tuple[str, int, int]] = []
-        pattern = re.compile(r'([.!?]+(?=\s|\n|$)|(?:\r?\n){2,})')
+        # Split on sentence terminals (.!?), double newlines, or single newlines that follow standalone titles/headings
+        pattern = re.compile(r'([.!?]+(?=\s|\n|$)|(?:\r?\n)+)')
         start = 0
 
         for m in pattern.finditer(text):
@@ -182,7 +201,19 @@ class RobertaAIDetector:
             p_start = m.start()
             delimiter = m.group(1)
 
-            if not delimiter.startswith('\n') and not delimiter.startswith('\r'):
+            # Check if this is a single newline inside a continuous sentence
+            if '\n' in delimiter or '\r' in delimiter:
+                preceding_slice = text[start:p_start].strip()
+                p_words = self._words(preceding_slice)
+                # Keep together if it's a soft wrap in a regular continuous sentence
+                is_soft_wrap = (
+                    len(delimiter.replace('\r', '')) == 1 and
+                    len(p_words) > 8 and
+                    not (preceding_slice.endswith('.') or preceding_slice.endswith('!') or preceding_slice.endswith('?'))
+                )
+                if is_soft_wrap:
+                    continue
+            else:
                 prev_word_m = re.search(r'\b[\w\.]+$', text[start:p_start + len(delimiter)])
                 if prev_word_m:
                     word = prev_word_m.group(0).lower()
@@ -290,6 +321,12 @@ class RobertaAIDetector:
         hedges = len(self._hedge_re.findall(sentence))
         connectives = len(self._connective_re.findall(sentence))
 
+        # 5. Generative triad cadence (three parallel participles: "optimizing X, enhancing Y, and driving Z")
+        triad_m = re.search(r'\b(\w{4,}ing)\b[^,.!?]*?,\s+\b(\w{4,}ing)\b[^,.!?]*?,\s+and\s+\b(\w{4,}ing)\b', sentence, re.IGNORECASE)
+        if triad_m:
+            phrase_pts += 2.6
+            reasons.append("Generative triad cadence (three parallel participles)")
+
         kw_score = len(t1_hits) * 2.5 + min(len(t2_hits), 6) * 0.85 + (expository_hits * 1.5)
         if t1_hits:
             reasons.append(f"Signature AI vocabulary: {', '.join(t1_hits[:2])}")
@@ -306,7 +343,7 @@ class RobertaAIDetector:
         raw_composite = (phrase_pts * 0.38) + (kw_score * 0.35) + (syntax_score * 0.22) + (cadence_score * 0.12) - human_penalty
         ai_prob = 1.0 / (1.0 + math.exp(-2.5 * (raw_composite - 0.40)))
 
-        is_ai = bool((ai_prob >= 0.50 or phrase_pts >= 2.0 or len(t1_hits) >= 1 or (len(t2_hits) >= 2 and passives >= 1)) and casual_hits == 0)
+        is_ai = bool((ai_prob >= 0.48 or phrase_pts >= 2.0 or len(t1_hits) >= 1 or (len(t2_hits) >= 2 and passives >= 1) or (phrase_pts >= 1.5 and len(t2_hits) >= 1)) and casual_hits == 0)
 
         return {
             "ai_prob": ai_prob,
@@ -375,10 +412,18 @@ class RobertaAIDetector:
             if t_badge:
                 turnitin_score = float(t_badge.group(2))
 
-        # Filter out metadata lines (Assignment headers, Student name, Course code, Bibliography)
+        # Filter out metadata lines and standalone section headers
+        _section_header_re = re.compile(
+            r'^\s*(introduction|conclusion|overview|abstract|background|literature\s+review|methodology|proposed\s+(system|method|architecture)|experimental\s+(results|setup)|discussion|future\s+scope|references|acknowledgment|summary|linear\s+vs\s+non-linear[a-z\s]*|\d+(\.\d+)*\s+[a-z\s]+)\s*$',
+            re.IGNORECASE
+        )
+
         content_sentences = []
         for s_text, start, end in sentences_with_spans:
             s_clean = s_text.strip()
+            s_w = self._words(s_clean)
+            if len(s_w) <= 7 and _section_header_re.match(s_clean):
+                continue
             if self._metadata_re.search(s_clean) or self._citation_re.search(s_clean):
                 continue
             content_sentences.append((s_text, start, end))
@@ -403,6 +448,19 @@ class RobertaAIDetector:
                 "words": w_count,
                 "eval": eval_res
             })
+
+        # Contextual sequence smoothing (bidirectional Markov prior across adjacent sentences)
+        if len(evaluated) >= 3:
+            for i in range(len(evaluated)):
+                cur = evaluated[i]
+                if not cur["eval"]["is_ai"] and cur["eval"]["raw_score"] > 0.12:
+                    prev_ai = evaluated[i-1]["eval"]["is_ai"] if i > 0 else False
+                    next_ai = evaluated[i+1]["eval"]["is_ai"] if i < len(evaluated) - 1 else False
+                    if prev_ai and next_ai:
+                        cur["eval"]["is_ai"] = True
+                        cur["eval"]["ai_prob"] = max(cur["eval"]["ai_prob"], 0.72)
+                        if not cur["eval"]["reasons"]:
+                            cur["eval"]["reasons"].append("Contextual generative continuity (co-located with AI passages)")
 
         detected_spans = []
         ai_flagged_words = 0
