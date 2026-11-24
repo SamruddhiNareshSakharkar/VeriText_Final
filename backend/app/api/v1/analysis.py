@@ -1,5 +1,6 @@
 import uuid
 import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, status
@@ -24,6 +25,8 @@ from backend.app.ml.ai_detector import ai_detector
 from backend.app.ml.similarity_engine import similarity_engine
 from backend.app.ml.handwriting_engine import handwriting_engine
 from backend.app.storage.local_storage import storage_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Analysis Engine"])
 
@@ -552,10 +555,149 @@ async def upload_and_compare_documents(
 
     now = datetime.now(timezone.utc)
 
+    # Persist submissions and results so Highlighted PDF works cleanly
+    sub_id_a = str(uuid.uuid4())
+    sub_id_b = str(uuid.uuid4())
+    resolved_assign_id = ""
+
+    try:
+        assign = db.query(Assignment).first()
+        if assign:
+            resolved_assign_id = assign.id
+            sub_rec_a = Submission(
+                id=sub_id_a,
+                assignment_id=assign.id,
+                student_id=current_user.id,
+                file_name=file_a.filename or "Document 1",
+                file_path=rel_a,
+                file_size=size_a,
+                mime_type=file_a.content_type or "application/octet-stream",
+                status="completed",
+                submitted_at=now
+            )
+            sub_rec_b = Submission(
+                id=sub_id_b,
+                assignment_id=assign.id,
+                student_id=current_user.id,
+                file_name=file_b.filename or "Document 2",
+                file_path=rel_b,
+                file_size=size_b,
+                mime_type=file_b.content_type or "application/octet-stream",
+                status="completed",
+                submitted_at=now
+            )
+            db.add(sub_rec_a)
+            db.add(sub_rec_b)
+
+            # Persist OCR Results
+            ocr_rec_a = OCRResult(
+                id=str(uuid.uuid4()),
+                submission_id=sub_id_a,
+                extracted_text=text_a,
+                pages_json=ocr_a.get("pages", []),
+                word_count=ocr_a.get("word_count", len(text_a.split())),
+                status="completed",
+                created_at=now
+            )
+            ocr_rec_b = OCRResult(
+                id=str(uuid.uuid4()),
+                submission_id=sub_id_b,
+                extracted_text=text_b,
+                pages_json=ocr_b.get("pages", []),
+                word_count=ocr_b.get("word_count", len(text_b.split())),
+                status="completed",
+                created_at=now
+            )
+            db.add(ocr_rec_a)
+            db.add(ocr_rec_b)
+
+            # Persist AI Analysis
+            ai_rec_a = AIAnalysis(
+                id=str(uuid.uuid4()),
+                submission_id=sub_id_a,
+                score=ai_a["score"],
+                confidence=ai_a["confidence"],
+                perplexity=ai_a.get("perplexity"),
+                burstiness=ai_a.get("burstiness"),
+                entropy=ai_a.get("entropy"),
+                detected_spans_json=ai_a.get("detected_spans", []),
+                analysis_metadata_json=ai_a.get("analysis_metadata", {}),
+                created_at=now
+            )
+            ai_rec_b = AIAnalysis(
+                id=str(uuid.uuid4()),
+                submission_id=sub_id_b,
+                score=ai_b["score"],
+                confidence=ai_b["confidence"],
+                perplexity=ai_b.get("perplexity"),
+                burstiness=ai_b.get("burstiness"),
+                entropy=ai_b.get("entropy"),
+                detected_spans_json=ai_b.get("detected_spans", []),
+                analysis_metadata_json=ai_b.get("analysis_metadata", {}),
+                created_at=now
+            )
+            db.add(ai_rec_a)
+            db.add(ai_rec_b)
+
+            # Persist Handwriting Analysis
+            if hw_a:
+                hw_rec_a = HandwritingAnalysis(
+                    id=str(uuid.uuid4()),
+                    submission_id=sub_id_a,
+                    slant_angle=hw_a.get("slant_angle", 0.0),
+                    stroke_variance=hw_a.get("stroke_variance", 0.0),
+                    spacing_rhythm=hw_a.get("spacing_rhythm", 0.0),
+                    aspect_ratio=hw_a.get("aspect_ratio", 0.0),
+                    feature_vector_json=hw_a.get("feature_vector", []),
+                    metrics_json=hw_a.get("metrics", {}),
+                    confidence=hw_a.get("confidence", 0.0),
+                    created_at=now
+                )
+                db.add(hw_rec_a)
+
+            if hw_b:
+                hw_rec_b = HandwritingAnalysis(
+                    id=str(uuid.uuid4()),
+                    submission_id=sub_id_b,
+                    slant_angle=hw_b.get("slant_angle", 0.0),
+                    stroke_variance=hw_b.get("stroke_variance", 0.0),
+                    spacing_rhythm=hw_b.get("spacing_rhythm", 0.0),
+                    aspect_ratio=hw_b.get("aspect_ratio", 0.0),
+                    feature_vector_json=hw_b.get("feature_vector", []),
+                    metrics_json=hw_b.get("metrics", {}),
+                    confidence=hw_b.get("confidence", 0.0),
+                    created_at=now
+                )
+                db.add(hw_rec_b)
+
+            # Persist Similarity
+            hw_score_val = (
+                hw_sim if isinstance(hw_sim, (int, float))
+                else (hw_sim.get("similarity_score", 0.0) if isinstance(hw_sim, dict) else 0.0)
+            )
+            sim_rec = SimilarityResult(
+                id=str(uuid.uuid4()),
+                assignment_id=assign.id,
+                submission_a_id=sub_id_a,
+                submission_b_id=sub_id_b,
+                score=sim_result["score"],
+                handwriting_score=hw_score_val,
+                matching_segments_json=sim_result.get("matching_segments", []),
+                algorithm=sim_result["algorithm"],
+                created_at=now
+            )
+            db.add(sim_rec)
+            db.commit()
+            logger.info(f"Successfully persisted comparison submissions {sub_id_a} and {sub_id_b}")
+    except Exception as ex_db:
+        db.rollback()
+        logger.warning(f"Failed to persist comparison submissions: {ex_db}")
+
     sub_out_a = SubmissionOut(
-        id=str(uuid.uuid4()),
-        assignment_id="",
-        student_id="",
+        id=sub_id_a,
+        assignment_id=resolved_assign_id,
+        student_id=current_user.id,
+        student=UserOut.model_validate(current_user),
         file_name=file_a.filename or "Document 1",
         file_size=size_a,
         mime_type=file_a.content_type or "application/octet-stream",
@@ -567,9 +709,10 @@ async def upload_and_compare_documents(
     )
 
     sub_out_b = SubmissionOut(
-        id=str(uuid.uuid4()),
-        assignment_id="",
-        student_id="",
+        id=sub_id_b,
+        assignment_id=resolved_assign_id,
+        student_id=current_user.id,
+        student=UserOut.model_validate(current_user),
         file_name=file_b.filename or "Document 2",
         file_size=size_b,
         mime_type=file_b.content_type or "application/octet-stream",

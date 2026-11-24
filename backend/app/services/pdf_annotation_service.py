@@ -3,7 +3,7 @@ import re
 import os
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from sqlalchemy.orm import Session
 import pymupdf  # PyMuPDF
 from reportlab.lib.pagesizes import letter
@@ -191,6 +191,45 @@ class PDFAnnotationService:
         doc.build(elements)
         return buffer.getvalue()
 
+    @staticmethod
+    def _line_matches_spans(line_text: str, spans: List[Dict[str, Any]], min_overlap_words: int = 3) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        """
+        Determines if a handwritten OCR line text matches or overlaps with flagged AI/plagiarism spans.
+        Uses substring check, 3-gram token matching, and proportional word overlap for robust matching.
+        """
+        if not line_text or len(line_text.strip()) < 4 or not spans:
+            return False, None
+
+        line_clean = re.sub(r'[^\w\s]', ' ', line_text.lower()).strip()
+        line_words = [w for w in line_clean.split() if len(w) >= 2]
+        if not line_words:
+            return False, None
+
+        for span in spans:
+            s_text = span.get("text", "")
+            if not s_text or len(s_text.strip()) < 8:
+                continue
+            s_clean = re.sub(r'[^\w\s]', ' ', s_text.lower()).strip()
+
+            # 1. Direct substring inclusion
+            if line_clean in s_clean or s_clean in line_clean:
+                return True, span
+
+            s_words = [w for w in s_clean.split() if len(w) >= 2]
+            if len(line_words) >= min_overlap_words and len(s_words) >= min_overlap_words:
+                # 2. Consecutive word n-gram matching
+                line_ngrams = {" ".join(line_words[i:i + min_overlap_words]) for i in range(len(line_words) - min_overlap_words + 1)}
+                span_ngrams = {" ".join(s_words[i:i + min_overlap_words]) for i in range(len(s_words) - min_overlap_words + 1)}
+                if line_ngrams & span_ngrams:
+                    return True, span
+
+                # 3. Proportional word overlap check
+                shared = set(line_words) & set(s_words)
+                if len(shared) >= 3 and (len(shared) / len(line_words)) >= 0.40:
+                    return True, span
+
+        return False, None
+
     def generate_annotated_pdf(self, submission_id: str, db: Session) -> Optional[bytes]:
         """
         Generates the complete annotated PDF for a submission:
@@ -244,7 +283,7 @@ class PDFAnnotationService:
                 page.insert_text((40, 50), text[:3000], fontsize=10)
 
             total_pages = len(doc_pdf)
-            word_count = ocr.word_count if ocr else len((ocr.extracted_text or "").split())
+            word_count = (ocr.word_count if ocr.word_count is not None else len((ocr.extracted_text or "").split())) if ocr else 0
 
             # -------------------------------------------------------------
             # STEP 1: EMBED HIGHLIGHT ANNOTATIONS ACROSS DOCUMENT PAGES
@@ -312,34 +351,79 @@ class PDFAnnotationService:
                                 )
                                 annot.update()
 
-            # Handle Scanned / Handwritten line boxes from OCRResult.pages_json
+            # -------------------------------------------------------------
+            # STEP 1B: EMBED HIGHLIGHTS ON HANDWRITTEN & SCANNED PAGES
+            # (Matches OCR line bounding boxes & scales to PDF points)
+            # -------------------------------------------------------------
             if ocr and ocr.pages_json:
                 for page_info in ocr.pages_json:
                     p_num = page_info.get("page_number", 1) - 1
                     if 0 <= p_num < len(doc_pdf):
                         page = doc_pdf[p_num]
                         lines = page_info.get("lines", [])
-                        for l in lines:
-                            l_text = l.get("authoritative_text") or l.get("text") or ""
-                            l_box = l.get("line_bbox")
-                            if not l_box or len(l_box) != 4 or not l_text:
-                                continue
-                            
-                            # Check if line text overlaps with AI spans
-                            is_line_ai = any(s.get("text", "") in l_text or l_text in s.get("text", "") for s in ai_spans if len(s.get("text", "")) > 15)
-                            is_line_sim = any(s.get("text", "") in l_text or l_text in s.get("text", "") for s in sim_segments if len(s.get("text", "")) > 15)
+                        if not lines:
+                            continue
 
-                            if is_line_ai or is_line_sim:
-                                rect = pymupdf.Rect(l_box[0], l_box[1], l_box[2], l_box[3])
-                                annot = page.add_rect_annot(rect)
-                                if is_line_ai and is_line_sim:
-                                    annot.set_colors(stroke=self.COLOR_DUAL, fill=self.COLOR_DUAL)
-                                elif is_line_ai:
-                                    annot.set_colors(stroke=self.COLOR_AI, fill=self.COLOR_AI)
-                                else:
-                                    annot.set_colors(stroke=self.COLOR_SIMILARITY, fill=self.COLOR_SIMILARITY)
-                                annot.set_opacity(0.35)
-                                annot.update()
+                        # Determine coordinate scaling from OCR image space to PDF points
+                        pw, ph = page.rect.width, page.rect.height
+                        valid_boxes = [l.get("bbox") or l.get("line_bbox") for l in lines if (l.get("bbox") or l.get("line_bbox"))]
+                        max_bx = max((b[2] for b in valid_boxes if len(b) == 4), default=pw)
+                        max_by = max((b[3] for b in valid_boxes if len(b) == 4), default=ph)
+
+                        scale_x = (pw / max_bx) if max_bx > pw * 1.15 else 1.0
+                        scale_y = (ph / max_by) if max_by > ph * 1.15 else 1.0
+
+                        total_page_lines = max(len(lines), 1)
+
+                        for idx, l in enumerate(lines, start=1):
+                            l_text = l.get("authoritative_text") or l.get("text") or l.get("raw_text") or ""
+                            if not l_text.strip():
+                                continue
+
+                            # Check for AI writing or peer similarity matches
+                            is_line_ai, ai_match = self._line_matches_spans(l_text, ai_spans)
+                            is_line_sim, sim_match = self._line_matches_spans(l_text, sim_segments)
+
+                            if not is_line_ai and not is_line_sim:
+                                continue
+
+                            # Resolve line bounding box
+                            l_box = l.get("bbox") or l.get("line_bbox")
+                            if l_box and len(l_box) == 4:
+                                x1 = max(0, min(pw, l_box[0] * scale_x))
+                                y1 = max(0, min(ph, l_box[1] * scale_y))
+                                x2 = max(0, min(pw, l_box[2] * scale_x))
+                                y2 = max(0, min(ph, l_box[3] * scale_y))
+                                rect = pymupdf.Rect(x1, y1, x2, y2)
+                            else:
+                                # Vertical band fallback if explicit bbox not present
+                                line_h = ph / total_page_lines
+                                y1 = (idx - 1) * line_h
+                                y2 = idx * line_h
+                                rect = pymupdf.Rect(30, y1, pw - 30, y2)
+
+                            annot = page.add_rect_annot(rect)
+                            if is_line_ai and is_line_sim:
+                                annot.set_colors(stroke=self.COLOR_DUAL, fill=self.COLOR_DUAL)
+                                annot.set_info(
+                                    title="AI & Similarity Match",
+                                    content=f"Compound overlap (AI syntax & peer match): '{l_text[:70]}...'"
+                                )
+                            elif is_line_ai:
+                                conf_pct = (ai_match.get("confidence", 0.90) * 100) if ai_match else 90
+                                annot.set_colors(stroke=self.COLOR_AI, fill=self.COLOR_AI)
+                                annot.set_info(
+                                    title="AI Writing Detected",
+                                    content=f"AI Syntax ({conf_pct:.0f}% confidence): {ai_match.get('reason', 'Generative syntax') if ai_match else 'Generative cadence'}"
+                                )
+                            else:
+                                annot.set_colors(stroke=self.COLOR_SIMILARITY, fill=self.COLOR_SIMILARITY)
+                                annot.set_info(
+                                    title="Plagiarism Match",
+                                    content=f"Peer match in handwriting: '{l_text[:70]}...'"
+                                )
+                            annot.set_opacity(0.35)
+                            annot.update()
 
             # -------------------------------------------------------------
             # STEP 2: BUILD TURNITIN-STYLE COVER PAGE & COMBINE

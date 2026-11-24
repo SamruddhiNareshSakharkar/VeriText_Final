@@ -1424,9 +1424,22 @@ def _recognize_image_hybrid(
     diagnostics = SegmentationDiagnostics()
 
     # =================================================================
-    # PATH A: HANDWRITTEN / MIXED DOCUMENT PIPELINE
+    # PATH A: HANDWRITTEN / MIXED DOCUMENT PIPELINE (HYBRID ARCHITECTURE)
     # =================================================================
     if doc_type in ("handwritten", "mixed"):
+        # 1. Primary: High-Accuracy VLM (Gemini 3.8 Flash / 3.5 Flash Lite)
+        try:
+            from backend.app.ml.gemini_ocr_engine import gemini_ocr_engine
+            if gemini_ocr_engine.is_available():
+                logger.info(f"Page {page_number}: Attempting Hybrid Gemini API handwriting OCR...")
+                gemini_res = gemini_ocr_engine.transcribe_page(pil_image, page_number=page_number)
+                if gemini_res and (gemini_res.get("text") or gemini_res.get("lines")):
+                    return gemini_res["text"], gemini_res
+                logger.warning(f"Page {page_number}: Gemini API returned empty or failed. Falling back to local TrOCR ONNX pipeline.")
+        except Exception as ex_gemini:
+            logger.warning(f"Page {page_number}: Gemini API OCR exception ({ex_gemini}). Falling back to local TrOCR ONNX pipeline.")
+
+        # 2. Offline Fallback: Local ONNX TrOCR pipeline (with aspect-ratio padding)
         try:
             from backend.app.ml.handwritten_ocr_pipeline import handwritten_ocr_pipeline
             logger.info(f"Page {page_number}: Routing to Local ONNX TrOCR handwritten pipeline.")
@@ -1436,7 +1449,7 @@ def _recognize_image_hybrid(
         except Exception as ex_new:
             logger.warning(f"ONNX handwritten pipeline fallback to legacy due to: {ex_new}")
 
-        # Fallback to legacy implementation if needed
+        # 3. Last-resort fallback: Legacy implementation
         return _legacy_recognize_handwritten_image(pil_image, page_number=page_number)
 
     # =================================================================

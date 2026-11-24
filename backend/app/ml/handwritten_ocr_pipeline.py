@@ -538,11 +538,12 @@ class TrOCRONNXEngine:
             return False
 
     def preprocess_image(self, image: Image.Image) -> np.ndarray:
-        """Preprocesses PIL image to TrOCR input tensor (1, 3, 384, 384) float32."""
+        """Preprocesses PIL image to TrOCR input tensor (1, 3, 384, 384) float32 preserving aspect ratio."""
         if image.mode != "RGB":
             image = image.convert("RGB")
-        resized = image.resize((384, 384), Image.Resampling.BICUBIC)
-        arr = np.array(resized, dtype=np.float32) / 255.0
+        # Preserve aspect ratio by padding with white background instead of squishing
+        padded = ImageOps.pad(image, (384, 384), color=(255, 255, 255), centering=(0.5, 0.5))
+        arr = np.array(padded, dtype=np.float32) / 255.0
         # Normalize with mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]
         norm = (arr - 0.5) / 0.5
         # Transpose from (H, W, C) to (1, C, H, W)
@@ -749,8 +750,19 @@ class HandwrittenOCRPipeline:
         pil_image: Image.Image,
         page_number: int = 1
     ) -> Dict[str, Any]:
-        """Processes a single handwritten page/image."""
+        """Processes a single handwritten page/image with Gemini Hybrid routing & TrOCR fallback."""
         start_time = time.perf_counter()
+
+        # Step 0: Try Hybrid Gemini API if enabled and available
+        try:
+            from backend.app.ml.gemini_ocr_engine import gemini_ocr_engine
+            if gemini_ocr_engine.is_available():
+                gemini_res = gemini_ocr_engine.transcribe_page(pil_image, page_number=page_number)
+                if gemini_res and (gemini_res.get("text") or gemini_res.get("lines")):
+                    gemini_res["processing_time_seconds"] = round(time.perf_counter() - start_time, 3)
+                    return gemini_res
+        except Exception as ex_gemini:
+            logger.warning(f"Page {page_number}: Gemini API invocation fallback in handwritten pipeline: {ex_gemini}")
 
         # Step 1: Illumination & Deskew Preprocessing
         preprocessed_img = preprocess_handwritten_page(pil_image)

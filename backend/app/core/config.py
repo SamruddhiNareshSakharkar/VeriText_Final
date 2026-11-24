@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     REPORT_STORAGE_PATH: str = os.getenv("REPORT_STORAGE_PATH", "./storage/reports")
     MAX_UPLOAD_SIZE_MB: int = 25
     ALLOWED_EXTENSIONS: List[str] = ["pdf", "txt", "docx", "png", "jpg", "jpeg"]
+
+    # Hybrid Handwriting OCR Settings (Gemini API with offline TrOCR fallback)
+    GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", None)
+    GEMINI_OCR_MODEL: str = os.getenv("GEMINI_OCR_MODEL", "gemini-3-flash-preview")
+    GEMINI_FALLBACK_MODEL: str = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
+    ENABLE_HYBRID_HANDWRITING_OCR: bool = os.getenv("ENABLE_HYBRID_HANDWRITING_OCR", "true").lower() in ("true", "1", "yes")
     
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = [
